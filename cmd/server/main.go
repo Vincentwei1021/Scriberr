@@ -246,5 +246,26 @@ func registerAdapters(cfg *config.Config) {
 	registry.RegisterDiarizationAdapter("sortformer",
 		adapters.NewSortformerAdapter(nvidiaEnvPath)) // Shares with Parakeet
 
+
+	// Dedicated environment path for FireRedASR2 (Chinese ASR)
+	fireredEnvPath := filepath.Join(cfg.WhisperXEnv, "firered")
+	fireredModelDir := os.Getenv("FIRERED_MODEL_DIR")
+	if fireredModelDir == "" {
+		fireredModelDir = "/app/models/FireRedASR2-AED"
+	}
+
+	// Dedicated environment path for Qwen3-ASR (multilingual)
+	qwen3EnvPath := filepath.Join(cfg.WhisperXEnv, "qwen3")
+
+	// Dedicated environment path for CAM++ diarization
+	camppEnvPath := filepath.Join(cfg.WhisperXEnv, "campp")
+
+	registry.RegisterTranscriptionAdapter("firered_asr",
+		adapters.NewFireRedAdapter(fireredEnvPath, fireredModelDir))
+	registry.RegisterTranscriptionAdapter("qwen3_asr",
+		adapters.NewQwen3ASRAdapter(qwen3EnvPath))
+	registry.RegisterDiarizationAdapter("campp",
+		adapters.NewCAMPPAdapter(camppEnvPath))
+
 	logger.Info("Adapter registration complete")
 }
