@@ -36,6 +36,12 @@ const (
 	FamilyOpenAI         = "openai"
 	FamilyMistralVoxtral = "mistral_voxtral"
 	DiarizeSortformer    = "nvidia_sortformer"
+	DiarizeCAMPP         = "funasr_campp"
+	ModelFireRed         = "firered_asr"
+	ModelQwen3           = "qwen3_asr"
+	ModelCAMPP           = "campp"
+	FamilyFireRed        = "firered"
+	FamilyQwen           = "qwen"
 	OutputFormatJSON     = "json"
 )
 
@@ -387,6 +393,10 @@ func (u *UnifiedTranscriptionService) selectModels(params models.WhisperXParams)
 		transcriptionModelID = ModelOpenAI
 	case FamilyMistralVoxtral:
 		transcriptionModelID = ModelVoxtral
+	case FamilyFireRed:
+		transcriptionModelID = ModelFireRed
+	case FamilyQwen:
+		transcriptionModelID = ModelQwen3
 	default:
 		transcriptionModelID = ModelWhisperX // Default fallback
 	}
@@ -398,6 +408,8 @@ func (u *UnifiedTranscriptionService) selectModels(params models.WhisperXParams)
 			diarizationModelID = ModelSortformer
 		case ModelPyannote, ModelDiarization31:
 			diarizationModelID = ModelPyannote
+		case DiarizeCAMPP:
+			diarizationModelID = ModelCAMPP
 		default:
 			diarizationModelID = ModelPyannote // Default fallback
 		}

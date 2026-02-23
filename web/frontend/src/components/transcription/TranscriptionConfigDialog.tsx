@@ -453,6 +453,12 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                                 <SelectItem value="openai" className={selectItemClassName}>
                                     OpenAI
                                 </SelectItem>
+                                <SelectItem value="firered" className={selectItemClassName}>
+                                    FireRedASR2-AED (Chinese)
+                                </SelectItem>
+                                <SelectItem value="qwen" className={selectItemClassName}>
+                                    Qwen3-ASR (Multilingual)
+                                </SelectItem>
                             </SelectContent>
                         </Select>
                     </FormField>
@@ -506,6 +512,31 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                             params={params}
                             updateParam={updateParam}
                         />
+                    )}
+
+                    {params.model_family === "firered" && (
+                        <Section title="FireRedASR2-AED Settings" description="Chinese-optimized ASR with punctuation restoration">
+                            <div className="space-y-4">
+                                <FormField label="Beam Size" description="Larger beam = more accurate but slower">
+                                    <Input
+                                        type="number"
+                                        min={1}
+                                        max={10}
+                                        value={params.beam_size || 3}
+                                        onChange={(e) => updateParam('beam_size', parseInt(e.target.value) || 3)}
+                                        className={inputClassName}
+                                    />
+                                </FormField>
+                            </div>
+                        </Section>
+                    )}
+
+                    {params.model_family === "qwen" && (
+                        <Section title="Qwen3-ASR Settings" description="Multilingual ASR supporting 52 languages">
+                            <InfoBanner variant="info" title="Auto Language Detection">
+                                Qwen3-ASR automatically detects the spoken language. No configuration needed.
+                            </InfoBanner>
+                        </Section>
                     )}
                 </div>
 
@@ -868,6 +899,7 @@ function ParakeetConfig({ params, updateParam, isMultiTrack }: ConfigProps) {
                                         <SelectContent className={selectContentClassName}>
                                             <SelectItem value="pyannote" className={selectItemClassName}>Pyannote</SelectItem>
                                             <SelectItem value="nvidia_sortformer" className={selectItemClassName}>NVIDIA Sortformer</SelectItem>
+                                            <SelectItem value="funasr_campp" className={selectItemClassName}>FunASR CAM++ (Chinese)</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </FormField>
@@ -990,6 +1022,7 @@ function CanaryConfig({ params, updateParam, isMultiTrack }: ConfigProps) {
                                         <SelectContent className={selectContentClassName}>
                                             <SelectItem value="pyannote" className={selectItemClassName}>Pyannote</SelectItem>
                                             <SelectItem value="nvidia_sortformer" className={selectItemClassName}>NVIDIA Sortformer</SelectItem>
+                                            <SelectItem value="funasr_campp" className={selectItemClassName}>FunASR CAM++ (Chinese)</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </FormField>
