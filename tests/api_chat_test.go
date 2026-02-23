@@ -8,6 +8,7 @@ import (
 	"scriberr/internal/models"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func (suite *APIHandlerTestSuite) TestGetChatModels() {
@@ -49,6 +50,40 @@ func (suite *APIHandlerTestSuite) TestCreateChatSession() {
 	req.TranscriptionID = "non-existent"
 	resp = suite.makeAuthenticatedRequest("POST", "/api/v1/chat/sessions", req, true)
 	assert.Equal(suite.T(), http.StatusNotFound, resp.Code)
+}
+
+func (suite *APIHandlerTestSuite) TestGetChatModelsCustomBaseURLWithoutAPIKey() {
+	var cfg models.LLMConfig
+	err := suite.helper.DB.Where("is_active = ?", true).First(&cfg).Error
+	require.NoError(suite.T(), err)
+
+	cfg.APIKey = nil
+	err = suite.helper.DB.Save(&cfg).Error
+	require.NoError(suite.T(), err)
+
+	modelsResp := suite.makeAuthenticatedRequest("GET", "/api/v1/chat/models", nil, true)
+	assert.Equal(suite.T(), http.StatusOK, modelsResp.Code)
+
+	var resp api.ChatModelsResponse
+	err = json.Unmarshal(modelsResp.Body.Bytes(), &resp)
+	require.NoError(suite.T(), err)
+	assert.NotEmpty(suite.T(), resp.Models)
+}
+
+func (suite *APIHandlerTestSuite) TestGetChatModelsFallbackToEnvWhenNoActiveConfig() {
+	err := suite.helper.DB.Model(&models.LLMConfig{}).Where("1 = 1").Update("is_active", false).Error
+	require.NoError(suite.T(), err)
+
+	suite.T().Setenv("OPENAI_BASE_URL", suite.mockOpenAI.URL)
+	suite.T().Setenv("OPENAI_API_KEY", "")
+
+	modelsResp := suite.makeAuthenticatedRequest("GET", "/api/v1/chat/models", nil, true)
+	assert.Equal(suite.T(), http.StatusOK, modelsResp.Code)
+
+	var resp api.ChatModelsResponse
+	err = json.Unmarshal(modelsResp.Body.Bytes(), &resp)
+	require.NoError(suite.T(), err)
+	assert.Contains(suite.T(), resp.Models, "gpt-3.5-turbo")
 }
 
 func (suite *APIHandlerTestSuite) TestGetChatSessions() {

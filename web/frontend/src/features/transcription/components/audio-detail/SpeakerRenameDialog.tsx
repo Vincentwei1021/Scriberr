@@ -1,13 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
-import { Loader2, Users, Save, X } from 'lucide-react';
+import { Loader2, Users, Save, X, Play, Pause } from 'lucide-react';
 import { useAuth } from "@/features/auth/hooks/useAuth";
-// Note: Install framer-motion for enhanced animations
-// import { motion, AnimatePresence } from 'framer-motion';
 
 interface SpeakerMapping {
   id?: number;
@@ -15,12 +13,20 @@ interface SpeakerMapping {
   custom_name: string;
 }
 
+interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+  speaker?: string;
+}
+
 interface SpeakerRenameDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   transcriptionId: string;
   onSpeakerMappingsUpdate: (mappings: SpeakerMapping[]) => void;
-  initialSpeakers?: string[]; // Detected speakers from transcript
+  initialSpeakers?: string[];
+  transcriptSegments?: TranscriptSegment[];
 }
 
 const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
@@ -29,6 +35,7 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
   transcriptionId,
   onSpeakerMappingsUpdate,
   initialSpeakers = [],
+  transcriptSegments = [],
 }) => {
   const { getAuthHeaders } = useAuth();
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string>>({});
@@ -36,33 +43,58 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [activePreviewSpeaker, setActivePreviewSpeaker] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewStopAtRef = useRef<number | null>(null);
+
+  const speakerSamples = useMemo(() => {
+    const samples: Record<string, TranscriptSegment> = {};
+    transcriptSegments.forEach((segment) => {
+      if (!segment.speaker || samples[segment.speaker]) {
+        return;
+      }
+      if (typeof segment.start !== 'number' || typeof segment.end !== 'number' || segment.end <= segment.start) {
+        return;
+      }
+      samples[segment.speaker] = segment;
+    });
+    return samples;
+  }, [transcriptSegments]);
+
+  const stopPreview = useCallback(() => {
+    const audio = previewAudioRef.current;
+    if (audio) {
+      audio.pause();
+    }
+    previewStopAtRef.current = null;
+    setActivePreviewSpeaker(null);
+  }, []);
+
   const fetchSpeakerMappings = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await fetch(`/api/v1/transcription/${transcriptionId}/speakers`, {
+      const response = await fetch('/api/v1/transcription/' + transcriptionId + '/speakers', {
         headers: { ...getAuthHeaders() },
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch speaker mappings: ${response.statusText}`);
+        throw new Error('Failed to fetch speaker mappings: ' + response.statusText);
       }
 
       const existingMappings: SpeakerMapping[] = await response.json();
 
-      // Create a mapping object from the response
       const mappingObj: Record<string, string> = {};
-
-      // Initialize with existing mappings
       existingMappings.forEach(mapping => {
         mappingObj[mapping.original_speaker] = mapping.custom_name;
       });
 
-      // Add any speakers from the transcript that don't have mappings yet
       initialSpeakers.forEach(speaker => {
         if (!mappingObj[speaker]) {
-          mappingObj[speaker] = speaker; // Default to original name
+          mappingObj[speaker] = speaker;
         }
       });
 
@@ -71,7 +103,6 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
       console.error('Error fetching speaker mappings:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch speaker mappings');
 
-      // Initialize with default mappings if fetch fails
       const defaultMappings: Record<string, string> = {};
       initialSpeakers.forEach(speaker => {
         defaultMappings[speaker] = speaker;
@@ -82,12 +113,61 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
     }
   }, [transcriptionId, getAuthHeaders, initialSpeakers]);
 
-  // Initialize speaker mappings when dialog opens
+  const fetchPreviewAudio = useCallback(async () => {
+    if (!open || !transcriptionId) {
+      return;
+    }
+
+    setPreviewError(null);
+    try {
+      const response = await fetch('/api/v1/transcription/' + transcriptionId + '/audio', {
+        headers: { ...getAuthHeaders() },
+      });
+      if (!response.ok) {
+        throw new Error('Audio load failed: ' + response.status);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+
+      setPreviewAudioUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return objectUrl;
+      });
+    } catch (err) {
+      console.error('Error loading preview audio:', err);
+      setPreviewError('Unable to load speaker preview audio.');
+      setPreviewAudioUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return null;
+      });
+    }
+  }, [open, transcriptionId, getAuthHeaders]);
+
   useEffect(() => {
     if (open && transcriptionId) {
       fetchSpeakerMappings();
+      fetchPreviewAudio();
     }
-  }, [open, transcriptionId, fetchSpeakerMappings]);
+  }, [open, transcriptionId, fetchSpeakerMappings, fetchPreviewAudio]);
+
+  useEffect(() => {
+    return () => {
+      if (previewAudioUrl) {
+        URL.revokeObjectURL(previewAudioUrl);
+      }
+    };
+  }, [previewAudioUrl]);
+
+  useEffect(() => {
+    if (!open) {
+      stopPreview();
+    }
+  }, [open, stopPreview]);
 
   const handleSpeakerNameChange = (originalSpeaker: string, customName: string) => {
     setSpeakerMappings(prev => ({
@@ -96,18 +176,57 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
     }));
   };
 
+  const handlePreviewTimeUpdate = () => {
+    if (!activePreviewSpeaker || previewStopAtRef.current == null || !previewAudioRef.current) {
+      return;
+    }
+
+    if (previewAudioRef.current.currentTime >= previewStopAtRef.current) {
+      stopPreview();
+    }
+  };
+
+  const toggleSpeakerPreview = async (speaker: string) => {
+    if (!previewAudioUrl || !previewAudioRef.current) {
+      return;
+    }
+
+    const sample = speakerSamples[speaker];
+    if (!sample) {
+      setPreviewError('No sample segment found for ' + speaker + '.');
+      return;
+    }
+
+    if (activePreviewSpeaker === speaker && !previewAudioRef.current.paused) {
+      stopPreview();
+      return;
+    }
+
+    setPreviewError(null);
+
+    try {
+      previewStopAtRef.current = sample.end;
+      previewAudioRef.current.currentTime = sample.start;
+      await previewAudioRef.current.play();
+      setActivePreviewSpeaker(speaker);
+    } catch (err) {
+      console.error('Error playing speaker preview:', err);
+      setPreviewError('Failed to play speaker preview.');
+      stopPreview();
+    }
+  };
+
   const saveSpeakerMappings = async () => {
     setIsSaving(true);
     setError(null);
 
     try {
-      // Convert mappings to API format
       const mappingsArray = Object.entries(speakerMappings).map(([original_speaker, custom_name]) => ({
         original_speaker,
         custom_name,
       }));
 
-      const response = await fetch(`/api/v1/transcription/${transcriptionId}/speakers`, {
+      const response = await fetch('/api/v1/transcription/' + transcriptionId + '/speakers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -116,11 +235,12 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to save speaker mappings: ${response.statusText}`);
+        throw new Error('Failed to save speaker mappings: ' + response.statusText);
       }
 
       const updatedMappings: SpeakerMapping[] = await response.json();
       onSpeakerMappingsUpdate(updatedMappings);
+      stopPreview();
       onOpenChange(false);
     } catch (err) {
       console.error('Error saving speaker mappings:', err);
@@ -155,6 +275,12 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
               </div>
             )}
 
+            {previewError && (
+              <div className="p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                <p className="text-sm text-amber-700 dark:text-amber-300">{previewError}</p>
+              </div>
+            )}
+
             {speakers.length === 0 ? (
               <Card>
                 <CardContent className="pt-6 text-center text-muted-foreground">
@@ -163,31 +289,57 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
                 </CardContent>
               </Card>
             ) : (
-              <div className="space-y-3 max-h-60 overflow-y-auto">
-                {speakers.map((speaker) => (
-                  <div
-                    key={speaker}
-                    className="space-y-1"
-                  >
-                    <Label htmlFor={`speaker-${speaker}`} className="text-xs font-medium text-muted-foreground">
-                      {speaker}
-                    </Label>
-                    <Input
-                      id={`speaker-${speaker}`}
-                      value={speakerMappings[speaker] || ''}
-                      onChange={(e) => handleSpeakerNameChange(speaker, e.target.value)}
-                      placeholder={`Enter custom name for ${speaker}`}
-                      className="transition-all duration-200 focus:ring-2 focus:ring-primary/20"
-                    />
-                  </div>
-                ))}
+              <div className="space-y-3 max-h-72 overflow-y-auto">
+                {speakers.map((speaker) => {
+                  const sample = speakerSamples[speaker];
+                  const canPreview = !!previewAudioUrl && !!sample;
+
+                  return (
+                    <div
+                      key={speaker}
+                      className="space-y-1"
+                    >
+                      <Label htmlFor={'speaker-' + speaker} className="text-xs font-medium text-muted-foreground">
+                        {speaker}
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id={'speaker-' + speaker}
+                          value={speakerMappings[speaker] || ''}
+                          onChange={(e) => handleSpeakerNameChange(speaker, e.target.value)}
+                          placeholder={'Enter custom name for ' + speaker}
+                          className="transition-all duration-200 focus:ring-2 focus:ring-primary/20"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={() => { void toggleSpeakerPreview(speaker); }}
+                          disabled={!canPreview}
+                          title={canPreview ? ('Preview ' + speaker) : ('No sample available for ' + speaker)}
+                        >
+                          {activePreviewSpeaker === speaker ? (
+                            <Pause className="h-4 w-4" />
+                          ) : (
+                            <Play className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                      {sample?.text && (
+                        <p className="text-[11px] text-muted-foreground line-clamp-1">
+                          Sample: {sample.text}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
         )}
 
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
+          <Button variant="outline" onClick={() => { stopPreview(); onOpenChange(false); }} disabled={isSaving}>
             <X className="h-4 w-4 mr-1" />
             Cancel
           </Button>
@@ -209,6 +361,15 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
             )}
           </Button>
         </DialogFooter>
+
+        <audio
+          ref={previewAudioRef}
+          src={previewAudioUrl || undefined}
+          preload="metadata"
+          onTimeUpdate={handlePreviewTimeUpdate}
+          onEnded={stopPreview}
+          className="hidden"
+        />
       </DialogContent>
     </Dialog>
   );

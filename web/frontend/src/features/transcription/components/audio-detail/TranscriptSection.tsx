@@ -214,6 +214,7 @@ export function TranscriptSection({
                 onOpenChange={setSpeakerRenameOpen}
                 transcriptionId={audioId}
                 initialSpeakers={getDetectedSpeakers()}
+                transcriptSegments={transcript?.segments || []}
                 onSpeakerMappingsUpdate={() => {
                     queryClient.invalidateQueries({ queryKey: ["speakerMappings", audioId] });
                 }}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -219,6 +220,31 @@ func main() {
 func registerAdapters(cfg *config.Config) {
 	logger.Info("Registering adapters with environment path", "whisperx_env", cfg.WhisperXEnv)
 
+	enabledAdapters := parseEnabledAdapters(os.Getenv("ENABLED_ADAPTERS"))
+	if len(enabledAdapters) > 0 {
+		logger.Info("Adapter allowlist enabled", "enabled_adapters", strings.Join(sortedMapKeys(enabledAdapters), ","))
+	}
+	isEnabled := func(adapterID string) bool {
+		if len(enabledAdapters) == 0 {
+			return true
+		}
+		return enabledAdapters[strings.ToLower(strings.TrimSpace(adapterID))]
+	}
+	registerTranscription := func(adapterID string, registerFn func()) {
+		if isEnabled(adapterID) {
+			registerFn()
+			return
+		}
+		logger.Info("Skipping transcription adapter", "adapter_id", adapterID)
+	}
+	registerDiarization := func(adapterID string, registerFn func()) {
+		if isEnabled(adapterID) {
+			registerFn()
+			return
+		}
+		logger.Info("Skipping diarization adapter", "adapter_id", adapterID)
+	}
+
 	// Shared environment path for NVIDIA models (NeMo-based)
 	nvidiaEnvPath := filepath.Join(cfg.WhisperXEnv, "parakeet")
 
@@ -229,23 +255,36 @@ func registerAdapters(cfg *config.Config) {
 	voxtralEnvPath := filepath.Join(cfg.WhisperXEnv, "voxtral")
 
 	// Register transcription adapters
-	registry.RegisterTranscriptionAdapter("whisperx",
-		adapters.NewWhisperXAdapter(cfg.WhisperXEnv))
-	registry.RegisterTranscriptionAdapter("parakeet",
-		adapters.NewParakeetAdapter(nvidiaEnvPath))
-	registry.RegisterTranscriptionAdapter("canary",
-		adapters.NewCanaryAdapter(nvidiaEnvPath)) // Shares with Parakeet
-	registry.RegisterTranscriptionAdapter("voxtral",
-		adapters.NewVoxtralAdapter(voxtralEnvPath))
-	registry.RegisterTranscriptionAdapter("openai_whisper",
-		adapters.NewOpenAIAdapter(cfg.OpenAIAPIKey))
+	registerTranscription("whisperx", func() {
+		registry.RegisterTranscriptionAdapter("whisperx",
+			adapters.NewWhisperXAdapter(cfg.WhisperXEnv))
+	})
+	registerTranscription("parakeet", func() {
+		registry.RegisterTranscriptionAdapter("parakeet",
+			adapters.NewParakeetAdapter(nvidiaEnvPath))
+	})
+	registerTranscription("canary", func() {
+		registry.RegisterTranscriptionAdapter("canary",
+			adapters.NewCanaryAdapter(nvidiaEnvPath)) // Shares with Parakeet
+	})
+	registerTranscription("voxtral", func() {
+		registry.RegisterTranscriptionAdapter("voxtral",
+			adapters.NewVoxtralAdapter(voxtralEnvPath))
+	})
+	registerTranscription("openai_whisper", func() {
+		registry.RegisterTranscriptionAdapter("openai_whisper",
+			adapters.NewOpenAIAdapter(cfg.OpenAIAPIKey))
+	})
 
 	// Register diarization adapters
-	registry.RegisterDiarizationAdapter("pyannote",
-		adapters.NewPyAnnoteAdapter(pyannoteEnvPath)) // Dedicated environment
-	registry.RegisterDiarizationAdapter("sortformer",
-		adapters.NewSortformerAdapter(nvidiaEnvPath)) // Shares with Parakeet
-
+	registerDiarization("pyannote", func() {
+		registry.RegisterDiarizationAdapter("pyannote",
+			adapters.NewPyAnnoteAdapter(pyannoteEnvPath)) // Dedicated environment
+	})
+	registerDiarization("sortformer", func() {
+		registry.RegisterDiarizationAdapter("sortformer",
+			adapters.NewSortformerAdapter(nvidiaEnvPath)) // Shares with Parakeet
+	})
 
 	// Dedicated environment path for FireRedASR2 (Chinese ASR)
 	fireredEnvPath := filepath.Join(cfg.WhisperXEnv, "firered")
@@ -260,12 +299,49 @@ func registerAdapters(cfg *config.Config) {
 	// Dedicated environment path for CAM++ diarization
 	camppEnvPath := filepath.Join(cfg.WhisperXEnv, "campp")
 
-	registry.RegisterTranscriptionAdapter("firered_asr",
-		adapters.NewFireRedAdapter(fireredEnvPath, fireredModelDir))
-	registry.RegisterTranscriptionAdapter("qwen3_asr",
-		adapters.NewQwen3ASRAdapter(qwen3EnvPath))
-	registry.RegisterDiarizationAdapter("campp",
-		adapters.NewCAMPPAdapter(camppEnvPath))
+	registerTranscription("firered_asr", func() {
+		registry.RegisterTranscriptionAdapter("firered_asr",
+			adapters.NewFireRedAdapter(fireredEnvPath, fireredModelDir))
+	})
+	registerTranscription("qwen3_asr", func() {
+		registry.RegisterTranscriptionAdapter("qwen3_asr",
+			adapters.NewQwen3ASRAdapter(qwen3EnvPath))
+	})
+	registerDiarization("campp", func() {
+		registry.RegisterDiarizationAdapter("campp",
+			adapters.NewCAMPPAdapter(camppEnvPath))
+	})
 
 	logger.Info("Adapter registration complete")
+}
+
+func parseEnabledAdapters(raw string) map[string]bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	enabled := make(map[string]bool)
+	for _, item := range strings.Split(raw, ",") {
+		id := strings.ToLower(strings.TrimSpace(item))
+		if id != "" {
+			enabled[id] = true
+		}
+	}
+	return enabled
+}
+
+func sortedMapKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	for i := 0; i < len(keys)-1; i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[i] > keys[j] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	return keys
 }

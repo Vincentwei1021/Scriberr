@@ -623,6 +623,37 @@ func (suite *APIHandlerTestSuite) TestTranscriptionSubmit() {
 	assert.Equal(suite.T(), models.StatusPending, response.Status)
 }
 
+// Test browser recording upload path: even if optional WebM->MP3 conversion fails,
+// upload should still succeed with original WebM file.
+func (suite *APIHandlerTestSuite) TestUploadAudioWebMConversionFallback() {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, err := writer.CreateFormFile("audio", "browser-recording.webm")
+	assert.NoError(suite.T(), err)
+	_, err = part.Write([]byte("not-a-real-webm-payload"))
+	assert.NoError(suite.T(), err)
+
+	assert.NoError(suite.T(), writer.WriteField("title", "Browser Recording"))
+	assert.NoError(suite.T(), writer.Close())
+
+	req, err := http.NewRequest("POST", "/api/v1/transcription/upload", body)
+	assert.NoError(suite.T(), err)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-API-Key", suite.helper.TestAPIKey)
+
+	w := httptest.NewRecorder()
+	suite.router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var response models.TranscriptionJob
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.Equal(suite.T(), models.StatusUploaded, response.Status)
+	assert.True(suite.T(), strings.HasSuffix(strings.ToLower(response.AudioPath), ".webm"))
+}
+
 // Test error responses for non-existent resources
 func (suite *APIHandlerTestSuite) TestNotFoundErrors() {
 	endpoints := []string{

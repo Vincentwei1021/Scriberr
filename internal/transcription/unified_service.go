@@ -567,12 +567,18 @@ func (u *UnifiedTranscriptionService) convertParametersForModel(params models.Wh
 		return u.convertToParakeetParams(params)
 	case ModelCanary:
 		return u.convertToCanaryParams(params)
+	case ModelFireRed:
+		return u.convertToFireRedParams(params)
+	case ModelQwen3:
+		return u.convertToQwen3Params(params)
 	case ModelWhisperX:
 		return u.convertToWhisperXParams(params)
 	case ModelPyannote:
 		return u.convertToPyannoteParams(params)
 	case ModelSortformer:
 		return u.convertToSortformerParams(params)
+	case ModelCAMPP:
+		return u.convertToCAMPPParams(params)
 	case ModelOpenAI:
 		return u.convertToOpenAIParams(params)
 	case ModelVoxtral:
@@ -622,6 +628,59 @@ func (u *UnifiedTranscriptionService) convertToVoxtralParams(params models.Whisp
 	}
 
 	return paramMap
+}
+
+// convertToFireRedParams converts to FireRedASR-specific parameters
+func (u *UnifiedTranscriptionService) convertToFireRedParams(params models.WhisperXParams) map[string]interface{} {
+	beamSize := params.BeamSize
+	if beamSize <= 0 {
+		beamSize = 3
+	}
+
+	paramMap := map[string]interface{}{
+		"beam_size":          beamSize,
+		"timestamps":         false,
+		"use_punc":           true,
+		"auto_convert_audio": true,
+	}
+
+	if params.Language != nil && *params.Language != "" {
+		paramMap["language"] = *params.Language
+	}
+
+	return paramMap
+}
+
+func normalizeQwenModelName(model string) string {
+	if model == "" {
+		return "Qwen/Qwen3-ASR-1.7B"
+	}
+
+	trimmed := strings.TrimSpace(model)
+	lower := strings.ToLower(trimmed)
+
+	// Ignore legacy Whisper model names when users switch families in UI/profiles.
+	whisperModelNames := map[string]struct{}{
+		"tiny": {}, "tiny.en": {}, "base": {}, "base.en": {}, "small": {}, "small.en": {},
+		"medium": {}, "medium.en": {}, "large": {}, "large-v1": {}, "large-v2": {}, "large-v3": {},
+	}
+	if _, isWhisperModel := whisperModelNames[lower]; isWhisperModel {
+		return "Qwen/Qwen3-ASR-1.7B"
+	}
+
+	if strings.Contains(lower, "qwen") || strings.Contains(trimmed, "/") {
+		return trimmed
+	}
+
+	return "Qwen/Qwen3-ASR-1.7B"
+}
+
+// convertToQwen3Params converts to Qwen3-ASR specific parameters
+func (u *UnifiedTranscriptionService) convertToQwen3Params(params models.WhisperXParams) map[string]interface{} {
+	return map[string]interface{}{
+		"model":              normalizeQwenModelName(params.Model),
+		"auto_convert_audio": true,
+	}
 }
 
 // convertToParakeetParams converts to Parakeet-specific parameters
@@ -756,6 +815,22 @@ func (u *UnifiedTranscriptionService) convertToSortformerParams(params models.Wh
 		"auto_convert_audio": true,
 		// Sortformer is optimized for 4 speakers, no additional config needed
 	}
+}
+
+func (u *UnifiedTranscriptionService) convertToCAMPPParams(params models.WhisperXParams) map[string]interface{} {
+	paramMap := map[string]interface{}{
+		"output_format":      OutputFormatJSON,
+		"auto_convert_audio": true,
+	}
+
+	if params.MinSpeakers != nil {
+		paramMap["min_speakers"] = *params.MinSpeakers
+	}
+	if params.MaxSpeakers != nil {
+		paramMap["max_speakers"] = *params.MaxSpeakers
+	}
+
+	return paramMap
 }
 
 func (u *UnifiedTranscriptionService) parametersToMap(params models.WhisperXParams) map[string]interface{} {

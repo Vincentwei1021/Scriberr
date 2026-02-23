@@ -20,6 +20,13 @@ type OpenAIService struct {
 	client  *http.Client
 }
 
+func (s *OpenAIService) setAuthHeader(req *http.Request) {
+	apiKey := strings.TrimSpace(s.apiKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+}
+
 // NewOpenAIService creates a new OpenAI service
 func NewOpenAIService(apiKey string, baseURL *string) *OpenAIService {
 	url := "https://api.openai.com/v1"
@@ -104,7 +111,7 @@ func (s *OpenAIService) GetModels(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	s.setAuthHeader(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
@@ -134,7 +141,7 @@ func (s *OpenAIService) GetModels(ctx context.Context) ([]string, error) {
 		} else {
 			// If custom baseURL → return all models
 			chatModels = append(chatModels, model.ID)
-    	}
+		}
 	}
 
 	return chatModels, nil
@@ -163,7 +170,7 @@ func (s *OpenAIService) ChatCompletion(ctx context.Context, model string, messag
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	s.setAuthHeader(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	log.Printf("[openai] chat completion request model=%s messages=%d stream=%v", model, len(messages), false)
@@ -220,7 +227,7 @@ func (s *OpenAIService) ChatCompletionStream(ctx context.Context, model string, 
 			return
 		}
 
-		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+		s.setAuthHeader(req)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
 
@@ -302,7 +309,7 @@ func (s *OpenAIService) ValidateAPIKey(ctx context.Context) error {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	s.setAuthHeader(req)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -323,19 +330,29 @@ func (s *OpenAIService) ValidateAPIKey(ctx context.Context) error {
 
 // GetContextWindow returns the context window size for a given OpenAI model
 func (s *OpenAIService) GetContextWindow(ctx context.Context, model string) (int, error) {
+	_ = ctx
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+
 	// Known context windows for OpenAI models
-	// As of late 2024/early 2025
+	// As of early 2026.
 	switch {
-	case strings.HasPrefix(model, "gpt-4-turbo"), strings.HasPrefix(model, "gpt-4o"):
+	case strings.HasPrefix(modelLower, "gpt-4-turbo"), strings.HasPrefix(modelLower, "gpt-4o"):
 		return 128000, nil
-	case strings.HasPrefix(model, "gpt-4-32k"):
+	case strings.HasPrefix(modelLower, "gpt-4-32k"):
 		return 32768, nil
-	case strings.HasPrefix(model, "gpt-4"):
+	case strings.HasPrefix(modelLower, "gpt-4"):
 		return 8192, nil
-	case strings.HasPrefix(model, "gpt-3.5-turbo-16k"):
+	case strings.HasPrefix(modelLower, "gpt-3.5-turbo-16k"):
 		return 16385, nil
-	case strings.HasPrefix(model, "gpt-3.5-turbo"):
+	case strings.HasPrefix(modelLower, "gpt-3.5-turbo"):
 		return 16385, nil // Most recent gpt-3.5-turbo is 16k
+	case strings.Contains(modelLower, "claude"), strings.Contains(modelLower, "anthropic"):
+		// Claude 3+/4 family generally supports 200k context.
+		// This avoids falling back to an incorrect 4k limit for LiteLLM/Bedrock aliases.
+		return 200000, nil
+	case strings.Contains(modelLower, "qwen"):
+		// Conservative default for Qwen in gateways where exact metadata is not exposed.
+		return 32768, nil
 	default:
 		// Default fallback
 		return 4096, nil

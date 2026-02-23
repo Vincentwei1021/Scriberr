@@ -38,9 +38,9 @@ func NewCAMPPAdapter(envPath string) *CAMPPAdapter {
 		RequiresGPU:        false, // Optional GPU support
 		MemoryRequirement:  2048,  // 2GB recommended
 		Features: map[string]bool{
-			"speaker_detection":  true,
-			"confidence_scores":  true,
-			"flexible_speakers":  true,
+			"speaker_detection": true,
+			"confidence_scores": true,
+			"flexible_speakers": true,
 		},
 		Metadata: map[string]string{
 			"engine":    "funasr",
@@ -118,7 +118,7 @@ func (c *CAMPPAdapter) PrepareEnvironment(ctx context.Context) error {
 	}
 
 	// Check if FunASR is already available
-	if CheckEnvironmentReady(c.envPath, "from funasr import AutoModel") {
+	if CheckEnvironmentReady(c.envPath, "from funasr import AutoModel; import torchcodec") {
 		logger.Info("FunASR already available in environment")
 		c.initialized = true
 		return nil

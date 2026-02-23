@@ -22,8 +22,9 @@ var fireredScripts embed.FS
 // FireRedAdapter implements the TranscriptionAdapter interface for FireRedASR2-AED
 type FireRedAdapter struct {
 	*BaseAdapter
-	envPath  string
-	modelDir string
+	envPath   string
+	modelDir  string
+	sourceDir string
 }
 
 // NewFireRedAdapter creates a new FireRedASR2-AED adapter
@@ -95,7 +96,21 @@ func NewFireRedAdapter(envPath, modelDir string) *FireRedAdapter {
 		BaseAdapter: baseAdapter,
 		envPath:     envPath,
 		modelDir:    modelDir,
+		sourceDir:   resolveFireRedSourceDir(modelDir),
 	}
+}
+
+func resolveFireRedSourceDir(modelDir string) string {
+	if sourceDir := strings.TrimSpace(os.Getenv("FIRERED_SOURCE_DIR")); sourceDir != "" {
+		return sourceDir
+	}
+
+	if modelDir == "" {
+		return ""
+	}
+
+	// Typical layout: <repo>/pretrained_models/FireRedASR2-AED
+	return filepath.Dir(filepath.Dir(modelDir))
 }
 
 // GetSupportedModels returns the available FireRedASR2 models
@@ -107,11 +122,11 @@ func (f *FireRedAdapter) GetSupportedModels() []string {
 func (f *FireRedAdapter) PrepareEnvironment(ctx context.Context) error {
 	logger.Info("Preparing FireRedASR2 environment", "env_path", f.envPath)
 
-	if err := f.copyTranscriptionScript(); err != nil {
-		return fmt.Errorf("failed to copy transcription script: %w", err)
+	if err := f.copyEmbeddedScripts(); err != nil {
+		return fmt.Errorf("failed to copy embedded scripts: %w", err)
 	}
 
-	if CheckEnvironmentReady(f.envPath, "import torch; print('ok')") {
+	if CheckEnvironmentReady(f.envPath, "from fireredasr2s.fireredasr2 import FireRedAsr2") {
 		logger.Info("FireRedASR2 environment already ready")
 		f.initialized = true
 		return nil
@@ -159,19 +174,26 @@ func (f *FireRedAdapter) setupFireRedEnvironment() error {
 	return nil
 }
 
-func (f *FireRedAdapter) copyTranscriptionScript() error {
+func (f *FireRedAdapter) copyEmbeddedScripts() error {
 	if err := os.MkdirAll(f.envPath, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	scriptContent, err := fireredScripts.ReadFile("py/firered/firered_transcribe.py")
-	if err != nil {
-		return fmt.Errorf("failed to read embedded firered_transcribe.py: %w", err)
+	scripts := []string{
+		"firered_transcribe.py",
+		"firered_realtime_worker.py",
 	}
 
-	scriptPath := filepath.Join(f.envPath, "firered_transcribe.py")
-	if err := os.WriteFile(scriptPath, scriptContent, 0755); err != nil {
-		return fmt.Errorf("failed to write transcription script: %w", err)
+	for _, scriptName := range scripts {
+		content, err := fireredScripts.ReadFile(filepath.Join("py/firered", scriptName))
+		if err != nil {
+			return fmt.Errorf("failed to read embedded %s: %w", scriptName, err)
+		}
+
+		scriptPath := filepath.Join(f.envPath, scriptName)
+		if err := os.WriteFile(scriptPath, content, 0755); err != nil {
+			return fmt.Errorf("failed to write %s: %w", scriptName, err)
+		}
 	}
 
 	return nil
@@ -270,6 +292,10 @@ func (f *FireRedAdapter) buildFireRedArgs(input interfaces.AudioInput, params ma
 		"--model-dir", f.modelDir,
 	}
 
+	if f.sourceDir != "" {
+		args = append(args, "--source-dir", f.sourceDir)
+	}
+
 	beamSize := f.GetIntParameter(params, "beam_size")
 	if beamSize > 0 {
 		args = append(args, "--beam-size", strconv.Itoa(beamSize))
@@ -287,6 +313,13 @@ func (f *FireRedAdapter) buildFireRedArgs(input interfaces.AudioInput, params ma
 	} else {
 		args = append(args, "--no-punc")
 	}
+
+	// Use FireRed's non-stream VAD model for long-audio segmentation to avoid OOM.
+	vadDir := filepath.Join(filepath.Dir(f.modelDir), "FireRedVAD", "VAD")
+	if _, err := os.Stat(vadDir); err == nil {
+		args = append(args, "--vad-model-dir", vadDir)
+	}
+	args = append(args, "--max-segment-seconds", "18")
 
 	return args, nil
 }

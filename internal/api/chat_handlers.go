@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -78,21 +79,34 @@ type Segment struct {
 	Speaker string  `json:"speaker"`
 }
 
-// getLLMService returns a provider-agnostic LLM service based on active config
+// getLLMService returns a provider-agnostic LLM service based on active config.
+// If no active configuration exists, it falls back to OPENAI_BASE_URL/OPENAI_API_KEY.
 func (h *Handler) getLLMService(ctx context.Context) (llm.Service, string, error) {
 	cfg, err := h.llmConfigRepo.GetActive(ctx)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, "", fmt.Errorf("no active LLM configuration found")
+			return h.getFallbackLLMServiceFromEnv()
 		}
 		return nil, "", fmt.Errorf("failed to get LLM config: %w", err)
 	}
 	switch strings.ToLower(cfg.Provider) {
 	case "openai":
-		if cfg.APIKey == nil || *cfg.APIKey == "" {
+		apiKey := ""
+		if cfg.APIKey != nil {
+			apiKey = strings.TrimSpace(*cfg.APIKey)
+		}
+
+		baseURL := "https://api.openai.com/v1"
+		if cfg.OpenAIBaseURL != nil && strings.TrimSpace(*cfg.OpenAIBaseURL) != "" {
+			baseURL = strings.TrimSpace(*cfg.OpenAIBaseURL)
+		}
+
+		// Official OpenAI endpoint requires a key, but OpenAI-compatible proxies may not.
+		if baseURL == "https://api.openai.com/v1" && apiKey == "" {
 			return nil, cfg.Provider, fmt.Errorf("OpenAI API key not configured")
 		}
-		return llm.NewOpenAIService(*cfg.APIKey, cfg.OpenAIBaseURL), cfg.Provider, nil
+
+		return llm.NewOpenAIService(apiKey, cfg.OpenAIBaseURL), cfg.Provider, nil
 	case "ollama":
 		if cfg.BaseURL == nil || *cfg.BaseURL == "" {
 			return nil, cfg.Provider, fmt.Errorf("Ollama base URL not configured")
@@ -101,6 +115,25 @@ func (h *Handler) getLLMService(ctx context.Context) (llm.Service, string, error
 	default:
 		return nil, cfg.Provider, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
 	}
+}
+
+func (h *Handler) getFallbackLLMServiceFromEnv() (llm.Service, string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	baseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+
+	if baseURL == "" && apiKey == "" {
+		return nil, "", fmt.Errorf("no active LLM configuration found")
+	}
+
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+
+	if baseURL == "https://api.openai.com/v1" && apiKey == "" {
+		return nil, "openai", fmt.Errorf("OpenAI API key not configured")
+	}
+
+	return llm.NewOpenAIService(apiKey, &baseURL), "openai", nil
 }
 
 // @Summary Get available chat models

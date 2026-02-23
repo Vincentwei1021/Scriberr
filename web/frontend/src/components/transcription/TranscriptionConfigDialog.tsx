@@ -318,10 +318,14 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
     useEffect(() => {
         if (open) {
             const baseParams = initialParams || DEFAULT_PARAMS;
+            const shouldUseCamppByDefault = !isMultiTrack && (baseParams.model_family === 'firered' || baseParams.model_family === 'qwen');
+            const shouldForceCuda = baseParams.model_family === 'firered' || baseParams.model_family === 'qwen';
             setParams({
                 ...baseParams,
+                device: shouldForceCuda ? 'cuda' : baseParams.device,
                 is_multi_track_enabled: isMultiTrack,
-                diarize: isMultiTrack ? false : baseParams.diarize
+                diarize: isMultiTrack ? false : (shouldUseCamppByDefault ? true : baseParams.diarize),
+                diarize_model: shouldUseCamppByDefault ? 'funasr_campp' : baseParams.diarize_model,
             });
             setProfileName(initialName);
             setProfileDescription(initialDescription);
@@ -331,8 +335,33 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
     const updateParam = <K extends keyof WhisperXParams>(key: K, value: WhisperXParams[K]) => {
         setParams(prev => {
             const newParams = { ...prev, [key]: value };
-            if (key === 'model_family' && value === 'whisper') {
-                newParams.diarize_model = 'pyannote';
+            if (key === 'model_family') {
+                const selectedFamily = String(value);
+
+                if (selectedFamily === 'whisper') {
+                    newParams.diarize_model = 'pyannote';
+                    if (!WHISPER_MODELS.includes(newParams.model)) {
+                        newParams.model = 'small';
+                    }
+                }
+
+                if (selectedFamily === 'firered') {
+                    newParams.model = 'firered-asr2-aed';
+                    newParams.device = 'cuda';
+                    newParams.diarize_model = 'funasr_campp';
+                    newParams.diarize = !isMultiTrack;
+                    if (!newParams.beam_size || newParams.beam_size < 1) {
+                        newParams.beam_size = 3;
+                    }
+                }
+
+                if (selectedFamily === 'qwen') {
+                    newParams.model = 'Qwen/Qwen3-ASR-1.7B';
+                    newParams.device = 'cuda';
+                    newParams.task = 'transcribe';
+                    newParams.diarize_model = 'funasr_campp';
+                    newParams.diarize = !isMultiTrack;
+                }
             }
             return newParams;
         });
@@ -365,10 +394,19 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
     };
 
     const handleSubmit = () => {
+        const submitParams = { ...params };
+
+        if (submitParams.model_family === 'firered' || submitParams.model_family === 'qwen') {
+            submitParams.device = 'cuda';
+            if (submitParams.diarize) {
+                submitParams.diarize_model = 'funasr_campp';
+            }
+        }
+
         if (isProfileMode) {
-            onStartTranscription({ ...params, profileName, profileDescription });
+            onStartTranscription({ ...submitParams, profileName, profileDescription });
         } else {
-            onStartTranscription(params);
+            onStartTranscription(submitParams);
         }
     };
 
@@ -515,28 +553,88 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                     )}
 
                     {params.model_family === "firered" && (
-                        <Section title="FireRedASR2-AED Settings" description="Chinese-optimized ASR with punctuation restoration">
-                            <div className="space-y-4">
-                                <FormField label="Beam Size" description="Larger beam = more accurate but slower">
-                                    <Input
-                                        type="number"
-                                        min={1}
-                                        max={10}
-                                        value={params.beam_size || 3}
-                                        onChange={(e) => updateParam('beam_size', parseInt(e.target.value) || 3)}
-                                        className={inputClassName}
-                                    />
-                                </FormField>
-                            </div>
-                        </Section>
+                        <div className="space-y-6">
+                            <Section title="FireRedASR2-AED Settings" description="Chinese-optimized ASR with punctuation restoration">
+                                <div className="space-y-4">
+                                    <FormField label="Beam Size" description="Larger beam = more accurate but slower">
+                                        <Input
+                                            type="number"
+                                            min={1}
+                                            max={10}
+                                            value={params.beam_size || 3}
+                                            onChange={(e) => updateParam('beam_size', parseInt(e.target.value) || 3)}
+                                            className={inputClassName}
+                                        />
+                                    </FormField>
+                                </div>
+                            </Section>
+
+                            {!isMultiTrack && (
+                                <Section title="Speaker Diarization" description="Separate speakers with CAM++ diarization">
+                                    <div className="space-y-4">
+                                        <div className="flex items-center gap-3">
+                                            <Switch
+                                                id="firered_diarize"
+                                                checked={params.diarize}
+                                                onCheckedChange={(v) => {
+                                                    updateParam('diarize', v);
+                                                    if (v) {
+                                                        updateParam('diarize_model', 'funasr_campp');
+                                                    }
+                                                }}
+                                            />
+                                            <label htmlFor="firered_diarize" className="text-sm text-[var(--text-primary)] cursor-pointer">
+                                                Enable speaker identification (CAM++)
+                                            </label>
+                                        </div>
+
+                                        {params.diarize && (
+                                            <InfoBanner variant="info" title="Diarization Model: CAM++">
+                                                CAM++ is currently used for FireRed diarization in this deployment.
+                                            </InfoBanner>
+                                        )}
+                                    </div>
+                                </Section>
+                            )}
+                        </div>
                     )}
 
                     {params.model_family === "qwen" && (
-                        <Section title="Qwen3-ASR Settings" description="Multilingual ASR supporting 52 languages">
-                            <InfoBanner variant="info" title="Auto Language Detection">
-                                Qwen3-ASR automatically detects the spoken language. No configuration needed.
-                            </InfoBanner>
-                        </Section>
+                        <div className="space-y-6">
+                            <Section title="Qwen3-ASR Settings" description="Multilingual ASR supporting 52 languages">
+                                <InfoBanner variant="info" title="Auto Language Detection">
+                                    Qwen3-ASR automatically detects the spoken language. No configuration needed.
+                                </InfoBanner>
+                            </Section>
+
+                            {!isMultiTrack && (
+                                <Section title="Speaker Diarization" description="Separate speakers with CAM++ diarization">
+                                    <div className="space-y-4">
+                                        <div className="flex items-center gap-3">
+                                            <Switch
+                                                id="qwen_diarize"
+                                                checked={params.diarize}
+                                                onCheckedChange={(v) => {
+                                                    updateParam('diarize', v);
+                                                    if (v) {
+                                                        updateParam('diarize_model', 'funasr_campp');
+                                                    }
+                                                }}
+                                            />
+                                            <label htmlFor="qwen_diarize" className="text-sm text-[var(--text-primary)] cursor-pointer">
+                                                Enable speaker identification (CAM++)
+                                            </label>
+                                        </div>
+
+                                        {params.diarize && (
+                                            <InfoBanner variant="info" title="Diarization Model: CAM++">
+                                                CAM++ is currently used for Qwen3-ASR diarization in this deployment.
+                                            </InfoBanner>
+                                        )}
+                                    </div>
+                                </Section>
+                            )}
+                        </div>
                     )}
                 </div>
 

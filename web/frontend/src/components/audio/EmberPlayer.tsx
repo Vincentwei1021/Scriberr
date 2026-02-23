@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, forwardRef, useImperativeHandle, useCallba
 import { Play, Pause, AlertCircle } from "lucide-react";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/features/auth/hooks/useAuth";
 
 export interface EmberPlayerRef {
     seekTo: (time: number) => void;
@@ -21,11 +22,14 @@ export const EmberPlayer = forwardRef<EmberPlayerRef, EmberPlayerProps>(
     ({ src, audioId, className, onTimeUpdate, onPlayStateChange }, ref) => {
         const audioRef = useRef<HTMLAudioElement>(null);
         const progressRef = useRef<HTMLDivElement>(null);
+        const objectUrlRef = useRef<string | null>(null);
+        const { getAuthHeaders } = useAuth();
 
         const [isPlaying, setIsPlaying] = useState(false);
         const [currentTime, setCurrentTime] = useState(0);
         const [duration, setDuration] = useState(0);
         const [error, setError] = useState<string | null>(null);
+        const [resolvedSrc, setResolvedSrc] = useState<string | undefined>(src);
 
         // Visualizer Interaction State
         const [hoverTime, setHoverTime] = useState(0);
@@ -45,10 +49,73 @@ export const EmberPlayer = forwardRef<EmberPlayerRef, EmberPlayerProps>(
         }));
 
         // --- 2. URL Logic ---
-        let streamUrl = src;
-        if (!streamUrl && audioId) {
-            streamUrl = `/api/v1/transcription/${audioId}/audio`;
-        }
+        useEffect(() => {
+            let cancelled = false;
+
+            const revokeCurrentObjectUrl = () => {
+                if (objectUrlRef.current) {
+                    URL.revokeObjectURL(objectUrlRef.current);
+                    objectUrlRef.current = null;
+                }
+            };
+
+            const loadAudio = async () => {
+                if (src) {
+                    revokeCurrentObjectUrl();
+                    setResolvedSrc(src);
+                    setError(null);
+                    return;
+                }
+
+                if (!audioId) {
+                    revokeCurrentObjectUrl();
+                    setResolvedSrc(undefined);
+                    return;
+                }
+
+                try {
+                    setError(null);
+                    const response = await fetch(`/api/v1/transcription/${audioId}/audio`, {
+                        headers: getAuthHeaders(),
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Audio load failed: ${response.status}`);
+                    }
+
+                    const audioBlob = await response.blob();
+                    const objectUrl = URL.createObjectURL(audioBlob);
+
+                    if (cancelled) {
+                        URL.revokeObjectURL(objectUrl);
+                        return;
+                    }
+
+                    revokeCurrentObjectUrl();
+                    objectUrlRef.current = objectUrl;
+                    setResolvedSrc(objectUrl);
+                } catch (e) {
+                    console.error("Audio fetch failed:", e);
+                    setResolvedSrc(undefined);
+                    setError("Unable to load audio stream.");
+                }
+            };
+
+            void loadAudio();
+
+            return () => {
+                cancelled = true;
+            };
+        }, [src, audioId, getAuthHeaders]);
+
+        useEffect(() => {
+            return () => {
+                if (objectUrlRef.current) {
+                    URL.revokeObjectURL(objectUrlRef.current);
+                    objectUrlRef.current = null;
+                }
+            };
+        }, []);
 
         // --- 3. Audio Handlers ---
         const togglePlay = () => {
@@ -252,9 +319,8 @@ export const EmberPlayer = forwardRef<EmberPlayerRef, EmberPlayerProps>(
                 {/* Hidden Audio Element */}
                 <audio
                     ref={audioRef}
-                    src={streamUrl}
+                    src={resolvedSrc}
                     preload="metadata"
-                    crossOrigin="use-credentials" // Sends cookies AND allows Web Audio API access (with backend support)
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
                     onTimeUpdate={handleTimeUpdate}

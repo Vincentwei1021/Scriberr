@@ -1,7 +1,7 @@
 model_list:
   - model_name: claude-sonnet
     litellm_params:
-      model: bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+      model: bedrock/us.anthropic.claude-sonnet-4-6
       aws_region_name: us-east-1
   - model_name: claude-haiku
     litellm_params:

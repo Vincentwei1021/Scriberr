@@ -277,31 +277,22 @@ func (h *Handler) UploadAudio(c *gin.Context) {
 		return
 	}
 
-	// Check if file is .webm and convert to MP3
-	// WebM files from browser MediaRecorder often lack proper duration metadata,
-	// causing playback issues. Converting to MP3 ensures proper metadata.
-	if strings.ToLower(filepath.Ext(filePath)) == ".webm" {
-		// Generate MP3 path
-		mp3Path := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".mp3"
-
-		// Convert using FFmpeg with high quality settings and audio normalization
-		// -i: input file
-		// -vn: no video
-		// -af loudnorm: normalize audio levels (prevents muffled/quiet recordings)
-		// -acodec libmp3lame: MP3 encoder
-		// -b:a 320k: high quality constant bitrate (better than VBR for recordings)
-		cmd := exec.Command("ffmpeg", "-i", filePath, "-vn", "-af", "loudnorm", "-acodec", "libmp3lame", "-b:a", "320k", mp3Path)
-		if err := cmd.Run(); err != nil {
-			_ = h.fileService.RemoveFile(filePath)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to convert WebM audio to MP3"})
-			return
+	// Browser recordings are commonly webm/weba. Best effort convert to MP3 for compatibility.
+	// If conversion fails, keep the original file so upload still succeeds.
+	switch strings.ToLower(filepath.Ext(filePath)) {
+	case ".webm", ".weba":
+		mp3Path, convErr := convertWebMToMP3(filePath)
+		if convErr != nil {
+			logger.Warn("WebM conversion failed, keeping original file",
+				"input", filePath,
+				"error", convErr)
+		} else {
+			if removeErr := h.fileService.RemoveFile(filePath); removeErr != nil {
+				logger.Warn("Failed to remove original WebM file", "path", filePath, "error", removeErr)
+			}
+			filePath = mp3Path
+			logger.Info("Converted browser recording to MP3", "output", filePath)
 		}
-
-		// Delete original .webm file
-		_ = h.fileService.RemoveFile(filePath)
-
-		// Update filePath to point to the MP3
-		filePath = mp3Path
 	}
 
 	// Create job record
@@ -370,6 +361,27 @@ func (h *Handler) UploadAudio(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, job)
+}
+
+func convertWebMToMP3(filePath string) (string, error) {
+	mp3Path := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".mp3"
+
+	cmd := exec.Command(
+		"ffmpeg",
+		"-i", filePath,
+		"-vn",
+		"-af", "loudnorm",
+		"-acodec", "libmp3lame",
+		"-b:a", "320k",
+		mp3Path,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg conversion failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	return mp3Path, nil
 }
 
 // @Summary Upload video file for transcription
@@ -762,8 +774,8 @@ func (h *Handler) SubmitJob(c *gin.Context) {
 
 	// Parse and validate diarization model
 	diarizeModel := getFormValueWithDefault(c, "diarize_model", "pyannote")
-	if diarizeModel != "pyannote" && diarizeModel != "nvidia_sortformer" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid diarize_model. Must be 'pyannote' or 'nvidia_sortformer'"})
+	if diarizeModel != "pyannote" && diarizeModel != "nvidia_sortformer" && diarizeModel != transcription.DiarizeCAMPP {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid diarize_model. Must be 'pyannote', 'nvidia_sortformer', or 'funasr_campp'"})
 		_ = h.fileService.RemoveFile(filePath)
 		return
 	}
@@ -1100,6 +1112,16 @@ func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.Tr
 	if err := c.ShouldBindJSON(&requestParams); err != nil {
 		// Use defaults if JSON parsing fails
 		logger.Debug("Failed to parse JSON parameters, using defaults", "error", err)
+	}
+
+	// FireRed/Qwen deployments are GPU-only in this environment.
+	if requestParams.ModelFamily == "firered" || requestParams.ModelFamily == "qwen" {
+		requestParams.Device = "cuda"
+	}
+
+	// FireRed/Qwen deployments should use CAM++ when diarization is enabled.
+	if (requestParams.ModelFamily == "firered" || requestParams.ModelFamily == "qwen") && requestParams.Diarize {
+		requestParams.DiarizeModel = transcription.DiarizeCAMPP
 	}
 
 	// Debug: log what we received

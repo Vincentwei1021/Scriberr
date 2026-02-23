@@ -527,6 +527,69 @@ func (suite *LLMTestSuite) TestErrorResponseHandling() {
 	assert.NotNil(suite.T(), response)
 }
 
+func (suite *LLMTestSuite) TestGetModelsWithoutAPIKeyOnCustomBaseURL() {
+	var authHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet","object":"model","created":1,"owned_by":"bedrock"}]}`))
+	}))
+	defer server.Close()
+
+	service := llm.NewOpenAIService("", &server.URL)
+	models, err := service.GetModels(context.Background())
+	assert.NoError(suite.T(), err)
+	assert.Equal(suite.T(), []string{"claude-sonnet"}, models)
+	assert.Equal(suite.T(), "", authHeader)
+}
+
+func (suite *LLMTestSuite) TestGetContextWindowByModelFamily() {
+	testCases := []struct {
+		name     string
+		model    string
+		expected int
+	}{
+		{
+			name:     "gpt 4o",
+			model:    "gpt-4o",
+			expected: 128000,
+		},
+		{
+			name:     "gpt 4",
+			model:    "gpt-4",
+			expected: 8192,
+		},
+		{
+			name:     "claude alias from litellm",
+			model:    "claude-sonnet",
+			expected: 200000,
+		},
+		{
+			name:     "claude bedrock id",
+			model:    "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+			expected: 200000,
+		},
+		{
+			name:     "qwen family",
+			model:    "qwen3-32b",
+			expected: 32768,
+		},
+		{
+			name:     "unknown fallback",
+			model:    "some-unknown-model",
+			expected: 4096,
+		},
+	}
+
+	for _, tc := range testCases {
+		suite.T().Run(tc.name, func(t *testing.T) {
+			window, err := suite.service.GetContextWindow(context.Background(), tc.model)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expected, window)
+		})
+	}
+}
+
 func TestLLMTestSuite(t *testing.T) {
 	suite.Run(t, new(LLMTestSuite))
 }

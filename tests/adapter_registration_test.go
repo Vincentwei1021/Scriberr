@@ -45,6 +45,24 @@ func TestAdapterEnvPathInjection(t *testing.T) {
 	if pyannote == nil {
 		t.Fatal("NewPyAnnoteAdapter returned nil")
 	}
+
+	// Test FireRed adapter
+	firered := adapters.NewFireRedAdapter(filepath.Join(testEnvPath, "firered"), "/app/models/FireRedASR2-AED")
+	if firered == nil {
+		t.Fatal("NewFireRedAdapter returned nil")
+	}
+
+	// Test Qwen3 adapter
+	qwen3 := adapters.NewQwen3ASRAdapter(filepath.Join(testEnvPath, "qwen3"))
+	if qwen3 == nil {
+		t.Fatal("NewQwen3ASRAdapter returned nil")
+	}
+
+	// Test CAM++ adapter
+	campp := adapters.NewCAMPPAdapter(filepath.Join(testEnvPath, "campp"))
+	if campp == nil {
+		t.Fatal("NewCAMPPAdapter returned nil")
+	}
 }
 
 // TestRegisterAdapters tests that registerAdapters correctly registers all adapters
@@ -67,16 +85,22 @@ func TestRegisterAdapters(t *testing.T) {
 		adapters.NewParakeetAdapter(nvidiaEnvPath))
 	registry.RegisterTranscriptionAdapter("canary",
 		adapters.NewCanaryAdapter(nvidiaEnvPath))
+	registry.RegisterTranscriptionAdapter("firered_asr",
+		adapters.NewFireRedAdapter(filepath.Join(cfg.WhisperXEnv, "firered"), "/app/models/FireRedASR2-AED"))
+	registry.RegisterTranscriptionAdapter("qwen3_asr",
+		adapters.NewQwen3ASRAdapter(filepath.Join(cfg.WhisperXEnv, "qwen3")))
 
 	registry.RegisterDiarizationAdapter("pyannote",
 		adapters.NewPyAnnoteAdapter(nvidiaEnvPath))
 	registry.RegisterDiarizationAdapter("sortformer",
 		adapters.NewSortformerAdapter(nvidiaEnvPath))
+	registry.RegisterDiarizationAdapter("campp",
+		adapters.NewCAMPPAdapter(filepath.Join(cfg.WhisperXEnv, "campp")))
 
 	// Verify registrations
 	transcriptionAdapters := registry.GetTranscriptionAdapters()
-	if len(transcriptionAdapters) != 3 {
-		t.Errorf("Expected 3 transcription adapters, got %d", len(transcriptionAdapters))
+	if len(transcriptionAdapters) != 5 {
+		t.Errorf("Expected 5 transcription adapters, got %d", len(transcriptionAdapters))
 	}
 
 	// Check specific adapters are registered
@@ -89,10 +113,16 @@ func TestRegisterAdapters(t *testing.T) {
 	if _, exists := transcriptionAdapters["canary"]; !exists {
 		t.Error("canary adapter not registered")
 	}
+	if _, exists := transcriptionAdapters["firered_asr"]; !exists {
+		t.Error("firered_asr adapter not registered")
+	}
+	if _, exists := transcriptionAdapters["qwen3_asr"]; !exists {
+		t.Error("qwen3_asr adapter not registered")
+	}
 
 	diarizationAdapters := registry.GetDiarizationAdapters()
-	if len(diarizationAdapters) != 2 {
-		t.Errorf("Expected 2 diarization adapters, got %d", len(diarizationAdapters))
+	if len(diarizationAdapters) != 3 {
+		t.Errorf("Expected 3 diarization adapters, got %d", len(diarizationAdapters))
 	}
 
 	// Check specific adapters are registered
@@ -101,6 +131,9 @@ func TestRegisterAdapters(t *testing.T) {
 	}
 	if _, exists := diarizationAdapters["sortformer"]; !exists {
 		t.Error("sortformer adapter not registered")
+	}
+	if _, exists := diarizationAdapters["campp"]; !exists {
+		t.Error("campp adapter not registered")
 	}
 }
 
@@ -115,6 +148,9 @@ func TestAdaptersUseConfigPaths(t *testing.T) {
 	canary := adapters.NewCanaryAdapter(filepath.Join(customPath, "parakeet"))
 	sortformer := adapters.NewSortformerAdapter(filepath.Join(customPath, "parakeet"))
 	pyannote := adapters.NewPyAnnoteAdapter(filepath.Join(customPath, "parakeet"))
+	firered := adapters.NewFireRedAdapter(filepath.Join(customPath, "firered"), "/app/models/FireRedASR2-AED")
+	qwen3 := adapters.NewQwen3ASRAdapter(filepath.Join(customPath, "qwen3"))
+	campp := adapters.NewCAMPPAdapter(filepath.Join(customPath, "campp"))
 
 	// All adapters should accept the custom path without error
 	if whisperx == nil {
@@ -131,6 +167,15 @@ func TestAdaptersUseConfigPaths(t *testing.T) {
 	}
 	if pyannote == nil {
 		t.Error("PyAnnote adapter should accept custom path")
+	}
+	if firered == nil {
+		t.Error("FireRed adapter should accept custom path")
+	}
+	if qwen3 == nil {
+		t.Error("Qwen3 adapter should accept custom path")
+	}
+	if campp == nil {
+		t.Error("CAMPP adapter should accept custom path")
 	}
 }
 

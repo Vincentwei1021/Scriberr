@@ -9,6 +9,10 @@ dependencies = [
     "soundfile",
     "numpy",
     "kaldiio",
+    "kaldi-native-fbank",
+    "transformers",
+    "cn2an",
+    "textgrid",
     "sentencepiece",
 ]
 

@@ -250,6 +250,26 @@ export const TranscriptView = forwardRef<HTMLDivElement, TranscriptViewProps>(({
     // Render transcript with word-level highlighting for compact view
     const renderCompactView = () => {
         if (!transcript.word_segments || transcript.word_segments.length === 0) {
+            if (transcript.segments && transcript.segments.length > 0) {
+                return (
+                    <div className="space-y-3">
+                        {transcript.segments.map((segment, index) => (
+                            <p
+                                key={`compact-segment-${index}`}
+                                className="text-lg leading-relaxed text-carbon-700 dark:text-carbon-300 whitespace-pre-wrap"
+                            >
+                                {segment.speaker && (
+                                    <span className="font-semibold text-carbon-800 dark:text-carbon-100 mr-2">
+                                        {getDisplaySpeakerName(segment.speaker)}:
+                                    </span>
+                                )}
+                                {segment.text}
+                            </p>
+                        ))}
+                    </div>
+                );
+            }
+
             return <p className="text-lg leading-relaxed text-carbon-700 dark:text-carbon-300 whitespace-pre-wrap">{transcript.text}</p>;
         }
 
