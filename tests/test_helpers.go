@@ -97,6 +97,7 @@ func (h *TestHelper) ResetDB(t *testing.T) {
 		&models.TranscriptionJobExecution{}, // Assuming this exists based on MockJobRepository
 		&models.TranscriptionJob{},
 		&models.TranscriptionProfile{},
+		&models.OpenClawProfile{},
 		&models.SummaryTemplate{},
 		&models.LLMConfig{},
 		&models.APIKey{},

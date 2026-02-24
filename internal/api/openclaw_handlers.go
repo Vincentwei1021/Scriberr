@@ -1,0 +1,289 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+	"strings"
+
+	"scriberr/internal/models"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+// OpenClawProfileRequest defines create/update payload for OpenClaw profiles.
+type OpenClawProfileRequest struct {
+	Name     string `json:"name" binding:"required"`
+	IP       string `json:"ip" binding:"required"`
+	SSHKey   string `json:"ssh_key" binding:"required"`
+	HookKey  string `json:"hook_key" binding:"required"`
+	HookName string `json:"hook_name" binding:"required"`
+	Message  string `json:"message" binding:"required"`
+}
+
+// SendToOpenClawRequest defines send payload for a transcription.
+type SendToOpenClawRequest struct {
+	ProfileID string `json:"profile_id" binding:"required"`
+}
+
+// ListOpenClawProfiles lists all saved OpenClaw profiles.
+func (h *Handler) ListOpenClawProfiles(c *gin.Context) {
+	profiles, _, err := h.openClawProfileRepo.List(c.Request.Context(), 0, 1000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch OpenClaw profiles"})
+		return
+	}
+	c.JSON(http.StatusOK, profiles)
+}
+
+// CreateOpenClawProfile creates a new OpenClaw profile.
+func (h *Handler) CreateOpenClawProfile(c *gin.Context) {
+	var req OpenClawProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	profile := models.OpenClawProfile{
+		Name:     strings.TrimSpace(req.Name),
+		IP:       strings.TrimSpace(req.IP),
+		SSHKey:   strings.TrimSpace(req.SSHKey),
+		HookKey:  strings.TrimSpace(req.HookKey),
+		HookName: strings.TrimSpace(req.HookName),
+		Message:  strings.TrimSpace(req.Message),
+	}
+
+	if profile.Name == "" || profile.IP == "" || profile.SSHKey == "" || profile.HookKey == "" || profile.HookName == "" || profile.Message == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "All fields are required"})
+		return
+	}
+
+	if err := h.openClawProfileRepo.Create(c.Request.Context(), &profile); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create OpenClaw profile"})
+		return
+	}
+
+	c.JSON(http.StatusOK, profile)
+}
+
+// GetOpenClawProfile fetches one OpenClaw profile by ID.
+func (h *Handler) GetOpenClawProfile(c *gin.Context) {
+	id := c.Param("id")
+	profile, err := h.openClawProfileRepo.FindByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "OpenClaw profile not found"})
+		return
+	}
+	c.JSON(http.StatusOK, profile)
+}
+
+// UpdateOpenClawProfile updates an existing OpenClaw profile.
+func (h *Handler) UpdateOpenClawProfile(c *gin.Context) {
+	id := c.Param("id")
+
+	profile, err := h.openClawProfileRepo.FindByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "OpenClaw profile not found"})
+		return
+	}
+
+	var req OpenClawProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	profile.Name = strings.TrimSpace(req.Name)
+	profile.IP = strings.TrimSpace(req.IP)
+	profile.SSHKey = strings.TrimSpace(req.SSHKey)
+	profile.HookKey = strings.TrimSpace(req.HookKey)
+	profile.HookName = strings.TrimSpace(req.HookName)
+	profile.Message = strings.TrimSpace(req.Message)
+
+	if profile.Name == "" || profile.IP == "" || profile.SSHKey == "" || profile.HookKey == "" || profile.HookName == "" || profile.Message == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "All fields are required"})
+		return
+	}
+
+	if err := h.openClawProfileRepo.Update(c.Request.Context(), profile); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update OpenClaw profile"})
+		return
+	}
+
+	c.JSON(http.StatusOK, profile)
+}
+
+// DeleteOpenClawProfile deletes a saved OpenClaw profile.
+func (h *Handler) DeleteOpenClawProfile(c *gin.Context) {
+	id := c.Param("id")
+	if _, err := h.openClawProfileRepo.FindByID(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "OpenClaw profile not found"})
+		return
+	}
+
+	if err := h.openClawProfileRepo.Delete(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete OpenClaw profile"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "OpenClaw profile deleted"})
+}
+
+// SendTranscriptionToOpenClaw uploads SRT then triggers OpenClaw hook.
+func (h *Handler) SendTranscriptionToOpenClaw(c *gin.Context) {
+	if h.openClawService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "OpenClaw service is not initialized"})
+		return
+	}
+	if authType, exists := c.Get("auth_type"); !exists || authType != "jwt" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "JWT authentication required"})
+		return
+	}
+
+	jobID := c.Param("id")
+	var req SendToOpenClawRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	job, err := h.jobRepo.FindByID(c.Request.Context(), jobID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Transcription not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load transcription"})
+		return
+	}
+	if job.Status != models.StatusCompleted {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Transcription is not completed yet"})
+		return
+	}
+	if job.Transcript == nil || strings.TrimSpace(*job.Transcript) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Transcript is empty"})
+		return
+	}
+
+	profile, err := h.openClawProfileRepo.FindByID(c.Request.Context(), req.ProfileID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "OpenClaw profile not found"})
+		return
+	}
+
+	speakerMap := map[string]string{}
+	mappings, err := h.speakerMappingRepo.ListByJob(c.Request.Context(), jobID)
+	if err == nil {
+		for _, m := range mappings {
+			speakerMap[m.OriginalSpeaker] = m.CustomName
+		}
+	}
+
+	srt, err := buildSRTFromRawTranscript(*job.Transcript, speakerMap)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to build SRT: " + err.Error()})
+		return
+	}
+
+	title := "Untitled Recording"
+	if job.Title != nil && strings.TrimSpace(*job.Title) != "" {
+		title = strings.TrimSpace(*job.Title)
+	}
+
+	result, err := h.openClawService.SendSRT(c.Request.Context(), profile, srt, title, job.ID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to send to OpenClaw: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Sent to OpenClaw",
+		"profile_name": result.ProfileName,
+		"remote_path":  result.RemotePath,
+		"hook_output":  result.HookOutput,
+	})
+}
+
+type transcriptSegmentForSRT struct {
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Text    string  `json:"text"`
+	Speaker string  `json:"speaker,omitempty"`
+}
+
+type transcriptPayloadForSRT struct {
+	Text     string                    `json:"text"`
+	Segments []transcriptSegmentForSRT `json:"segments"`
+}
+
+func buildSRTFromRawTranscript(raw string, speakerMap map[string]string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty transcript")
+	}
+
+	var payload transcriptPayloadForSRT
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		var plain string
+		if errString := json.Unmarshal([]byte(trimmed), &plain); errString == nil && strings.TrimSpace(plain) != "" {
+			return buildSingleLineSRT(plain), nil
+		}
+		return "", fmt.Errorf("invalid transcript format")
+	}
+
+	if len(payload.Segments) > 0 {
+		var out strings.Builder
+		index := 1
+		for _, seg := range payload.Segments {
+			text := strings.TrimSpace(seg.Text)
+			if text == "" {
+				continue
+			}
+
+			start := math.Max(0, seg.Start)
+			end := math.Max(start+0.001, seg.End)
+			if end < start {
+				end = start + 0.001
+			}
+
+			if strings.TrimSpace(seg.Speaker) != "" {
+				displaySpeaker := seg.Speaker
+				if custom, ok := speakerMap[seg.Speaker]; ok && strings.TrimSpace(custom) != "" {
+					displaySpeaker = custom
+				}
+				text = fmt.Sprintf("%s: %s", displaySpeaker, text)
+			}
+
+			out.WriteString(fmt.Sprintf("%d\n%s --> %s\n%s\n\n", index, formatSRTTime(start), formatSRTTime(end), text))
+			index++
+		}
+
+		if out.Len() == 0 {
+			return "", fmt.Errorf("no usable transcript segments")
+		}
+		return out.String(), nil
+	}
+
+	if strings.TrimSpace(payload.Text) != "" {
+		return buildSingleLineSRT(payload.Text), nil
+	}
+
+	return "", fmt.Errorf("no transcript segments found")
+}
+
+func buildSingleLineSRT(text string) string {
+	return fmt.Sprintf("1\n00:00:00,000 --> 00:00:05,000\n%s\n\n", strings.TrimSpace(text))
+}
+
+func formatSRTTime(seconds float64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	hours := int(seconds / 3600)
+	minutes := int(math.Mod(seconds, 3600) / 60)
+	secs := int(math.Mod(seconds, 60))
+	milliseconds := int(math.Mod(seconds, 1.0) * 1000)
+
+	return fmt.Sprintf("%02d:%02d:%02d,%03d", hours, minutes, secs, milliseconds)
+}

@@ -1,0 +1,42 @@
+{
+  "name": "scriberr-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scriberr Desktop wrapper with SSH port forwarding",
+  "main": "src/main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.scriberr.desktop",
+    "productName": "Scriberr Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Scriberr needs microphone access to record audio for transcription.",
+        "NSScreenCaptureDescription": "Scriberr needs screen capture access to record system audio from shared tabs or windows."
+      }
+    }
+  }
+}

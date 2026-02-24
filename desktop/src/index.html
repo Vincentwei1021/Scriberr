@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Scriberr Desktop</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d10;
+        --panel: #111418;
+        --panel-2: #151a1f;
+        --text: #e8edf2;
+        --muted: #9aa8b6;
+        --accent: #ff7a18;
+        --accent-2: #ff4d00;
+        --ok: #10b981;
+        --err: #ef4444;
+        --border: #26313d;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+
+      .app {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      .top {
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        padding: 12px;
+      }
+
+      .title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .field { display: flex; flex-direction: column; gap: 4px; }
+      .field label { font-size: 11px; color: var(--muted); }
+      .field input {
+        height: 34px;
+        background: #0f1318;
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 0 10px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+        align-items: center;
+      }
+
+      button {
+        height: 34px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        padding: 0 12px;
+        color: white;
+        cursor: pointer;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      }
+
+      button.secondary {
+        background: transparent;
+        border-color: var(--border);
+        color: var(--text);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .status.ok { color: var(--ok); }
+      .status.err { color: var(--err); }
+
+      .viewer {
+        height: 100%;
+        display: flex;
+      }
+
+      iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: white;
+      }
+
+      .placeholder {
+        margin: auto;
+        text-align: center;
+        color: var(--muted);
+      }
+
+      .key-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="top">
+        <div class="title">Scriberr Desktop · SSH Tunnel</div>
+        <div class="grid">
+          <div class="field">
+            <label for="sshHost">SSH Host</label>
+            <input id="sshHost" placeholder="ec2-xx.compute.amazonaws.com" />
+          </div>
+          <div class="field">
+            <label for="sshUser">SSH User</label>
+            <input id="sshUser" placeholder="ubuntu" />
+          </div>
+          <div class="field">
+            <label for="sshPort">SSH Port</label>
+            <input id="sshPort" type="number" min="1" max="65535" />
+          </div>
+          <div class="field">
+            <label for="localPort">Local Port</label>
+            <input id="localPort" type="number" min="1" max="65535" />
+          </div>
+          <div class="field">
+            <label for="remoteHost">Remote Host</label>
+            <input id="remoteHost" placeholder="127.0.0.1" />
+          </div>
+          <div class="field">
+            <label for="remotePort">Remote Port</label>
+            <input id="remotePort" type="number" min="1" max="65535" />
+          </div>
+          <div class="field" style="grid-column: span 3;">
+            <label for="identityFile">Identity File (optional)</label>
+            <div class="key-row">
+              <input id="identityFile" placeholder="~/.ssh/id_rsa" />
+              <button id="chooseIdentity" class="secondary">Choose…</button>
+            </div>
+          </div>
+          <div class="field" style="grid-column: span 3;">
+            <label for="extraArgs">Extra SSH Args (optional)</label>
+            <input id="extraArgs" placeholder="-o ProxyJump=bastion.example.com" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="connectBtn">Connect</button>
+          <button id="disconnectBtn" class="secondary">Disconnect</button>
+          <button id="backBtn" class="secondary">Back</button>
+          <button id="saveConfigBtn" class="secondary">Save Config</button>
+          <button id="loadConfigBtn" class="secondary">Load Config</button>
+          <button id="reloadBtn" class="secondary">Reload App</button>
+          <span id="status" class="status">Disconnected</span>
+        </div>
+      </div>
+
+      <div class="viewer" id="viewer">
+        <div class="placeholder">连接后将在此显示 Scriberr 页面。</div>
+      </div>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

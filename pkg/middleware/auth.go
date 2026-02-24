@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -12,9 +13,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func isAuthDisabled() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("DISABLE_AUTH")))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
 // AuthMiddleware handles both API key and JWT authentication
 func AuthMiddleware(authService *auth.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isAuthDisabled() {
+			c.Set("auth_type", "disabled")
+			c.Set("user_id", uint(1))
+			c.Set("username", "local-user")
+			c.Next()
+			return
+		}
+
 		// Check for API key first
 		apiKey := c.GetHeader("X-API-Key")
 		if apiKey != "" {
@@ -105,6 +119,14 @@ func APIKeyOnlyMiddleware() gin.HandlerFunc {
 // JWTOnlyMiddleware only allows JWT authentication
 func JWTOnlyMiddleware(authService *auth.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isAuthDisabled() {
+			c.Set("auth_type", "disabled")
+			c.Set("user_id", uint(1))
+			c.Set("username", "local-user")
+			c.Next()
+			return
+		}
+
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})

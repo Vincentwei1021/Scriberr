@@ -46,7 +46,9 @@ type Handler struct {
 	chatRepo            repository.ChatRepository
 	noteRepo            repository.NoteRepository
 	speakerMappingRepo  repository.SpeakerMappingRepository
+	openClawProfileRepo repository.OpenClawProfileRepository
 	refreshTokenRepo    repository.RefreshTokenRepository
+	openClawService     *service.OpenClawService
 	taskQueue           *queue.TaskQueue
 	unifiedProcessor    *transcription.UnifiedJobProcessor
 	quickTranscription  *transcription.QuickTranscriptionService
@@ -69,7 +71,9 @@ func NewHandler(
 	chatRepo repository.ChatRepository,
 	noteRepo repository.NoteRepository,
 	speakerMappingRepo repository.SpeakerMappingRepository,
+	openClawProfileRepo repository.OpenClawProfileRepository,
 	refreshTokenRepo repository.RefreshTokenRepository,
+	openClawService *service.OpenClawService,
 	taskQueue *queue.TaskQueue,
 	unifiedProcessor *transcription.UnifiedJobProcessor,
 	quickTranscription *transcription.QuickTranscriptionService,
@@ -90,7 +94,9 @@ func NewHandler(
 		chatRepo:            chatRepo,
 		noteRepo:            noteRepo,
 		speakerMappingRepo:  speakerMappingRepo,
+		openClawProfileRepo: openClawProfileRepo,
 		refreshTokenRepo:    refreshTokenRepo,
+		openClawService:     openClawService,
 		taskQueue:           taskQueue,
 		unifiedProcessor:    unifiedProcessor,
 		quickTranscription:  quickTranscription,
@@ -1646,6 +1652,13 @@ func (h *Handler) Logout(c *gin.Context) {
 // @Success 200 {object} RegistrationStatusResponse
 // @Router /api/v1/auth/registration-status [get]
 func (h *Handler) GetRegistrationStatus(c *gin.Context) {
+	if strings.EqualFold(os.Getenv("DISABLE_AUTH"), "true") || os.Getenv("DISABLE_AUTH") == "1" {
+		c.JSON(http.StatusOK, RegistrationStatusResponse{
+			RegistrationEnabled: false,
+		})
+		return
+	}
+
 	userCount, err := h.userRepo.Count(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check registration status"})
