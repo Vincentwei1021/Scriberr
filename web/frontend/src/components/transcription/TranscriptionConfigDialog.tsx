@@ -318,14 +318,16 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
     useEffect(() => {
         if (open) {
             const baseParams = initialParams || DEFAULT_PARAMS;
-            const shouldUseCamppByDefault = !isMultiTrack && (baseParams.model_family === 'firered' || baseParams.model_family === 'qwen');
+            const isFireRedOrQwen = baseParams.model_family === 'firered' || baseParams.model_family === 'qwen';
+            const shouldDefaultEnableDiarize = !initialParams && !isMultiTrack && isFireRedOrQwen;
             const shouldForceCuda = baseParams.model_family === 'firered' || baseParams.model_family === 'qwen';
+            const resolvedDiarizeModel = baseParams.diarize_model || (isFireRedOrQwen ? 'funasr_campp' : 'pyannote');
             setParams({
                 ...baseParams,
                 device: shouldForceCuda ? 'cuda' : baseParams.device,
                 is_multi_track_enabled: isMultiTrack,
-                diarize: isMultiTrack ? false : (shouldUseCamppByDefault ? true : baseParams.diarize),
-                diarize_model: shouldUseCamppByDefault ? 'funasr_campp' : baseParams.diarize_model,
+                diarize: isMultiTrack ? false : (shouldDefaultEnableDiarize ? true : baseParams.diarize),
+                diarize_model: resolvedDiarizeModel,
             });
             setProfileName(initialName);
             setProfileDescription(initialDescription);
@@ -398,9 +400,6 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
 
         if (submitParams.model_family === 'firered' || submitParams.model_family === 'qwen') {
             submitParams.device = 'cuda';
-            if (submitParams.diarize) {
-                submitParams.diarize_model = 'funasr_campp';
-            }
         }
 
         if (isProfileMode) {
@@ -570,28 +569,104 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                             </Section>
 
                             {!isMultiTrack && (
-                                <Section title="Speaker Diarization" description="Separate speakers with CAM++ diarization">
+                                <Section title="Speaker Diarization" description="Separate speakers with CAM++ or Pyannote">
                                     <div className="space-y-4">
                                         <div className="flex items-center gap-3">
                                             <Switch
                                                 id="firered_diarize"
                                                 checked={params.diarize}
-                                                onCheckedChange={(v) => {
-                                                    updateParam('diarize', v);
-                                                    if (v) {
-                                                        updateParam('diarize_model', 'funasr_campp');
-                                                    }
-                                                }}
+                                                onCheckedChange={(v) => updateParam('diarize', v)}
                                             />
                                             <label htmlFor="firered_diarize" className="text-sm text-[var(--text-primary)] cursor-pointer">
-                                                Enable speaker identification (CAM++)
+                                                Enable speaker identification
                                             </label>
                                         </div>
 
                                         {params.diarize && (
-                                            <InfoBanner variant="info" title="Diarization Model: CAM++">
-                                                CAM++ is currently used for FireRed diarization in this deployment.
-                                            </InfoBanner>
+                                            <div className="p-4 bg-[var(--bg-main)] rounded-xl border border-[var(--border-subtle)] space-y-4">
+                                                <FormField label="Diarization Model">
+                                                    <Select value={params.diarize_model} onValueChange={(v) => updateParam('diarize_model', v)}>
+                                                        <SelectTrigger className={selectTriggerClassName}>
+                                                            <SelectValue />
+                                                        </SelectTrigger>
+                                                        <SelectContent className={selectContentClassName}>
+                                                            <SelectItem value="funasr_campp" className={selectItemClassName}>FunASR CAM++</SelectItem>
+                                                            <SelectItem value="pyannote" className={selectItemClassName}>Pyannote</SelectItem>
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormField>
+
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <FormField label="Min Speakers" optional>
+                                                        <Input
+                                                            type="number"
+                                                            min={1}
+                                                            max={20}
+                                                            placeholder="Auto"
+                                                            value={params.min_speakers || ""}
+                                                            onChange={(e) => updateParam('min_speakers', e.target.value ? parseInt(e.target.value) : undefined)}
+                                                            className={inputClassName}
+                                                        />
+                                                    </FormField>
+                                                    <FormField label="Max Speakers" optional>
+                                                        <Input
+                                                            type="number"
+                                                            min={1}
+                                                            max={20}
+                                                            placeholder="Auto"
+                                                            value={params.max_speakers || ""}
+                                                            onChange={(e) => updateParam('max_speakers', e.target.value ? parseInt(e.target.value) : undefined)}
+                                                            className={inputClassName}
+                                                        />
+                                                    </FormField>
+                                                </div>
+
+                                                {params.diarize_model === "pyannote" ? (
+                                                    <>
+                                                        <FormField label="Hugging Face Token">
+                                                            <Input
+                                                                type="password"
+                                                                placeholder="hf_..."
+                                                                value={params.hf_token || ""}
+                                                                onChange={(e) => updateParam('hf_token', e.target.value || undefined)}
+                                                                className={inputClassName}
+                                                            />
+                                                        </FormField>
+
+                                                        <div className="pt-3 border-t border-[var(--border-subtle)]">
+                                                            <p className="text-xs text-[var(--text-tertiary)] mb-3">Voice Detection Tuning (for noisy/distant audio)</p>
+                                                            <div className="grid grid-cols-2 gap-4">
+                                                                <FormField label="VAD Onset" description={PARAM_DESCRIPTIONS.vad_onset}>
+                                                                    <Input
+                                                                        type="number"
+                                                                        min={0.1}
+                                                                        max={0.9}
+                                                                        step={0.05}
+                                                                        value={params.vad_onset}
+                                                                        onChange={(e) => updateParam('vad_onset', parseFloat(e.target.value) || 0.5)}
+                                                                        className={inputClassName}
+                                                                    />
+                                                                </FormField>
+                                                                <FormField label="VAD Offset" description={PARAM_DESCRIPTIONS.vad_offset}>
+                                                                    <Input
+                                                                        type="number"
+                                                                        min={0.1}
+                                                                        max={0.9}
+                                                                        step={0.05}
+                                                                        value={params.vad_offset}
+                                                                        onChange={(e) => updateParam('vad_offset', parseFloat(e.target.value) || 0.363)}
+                                                                        className={inputClassName}
+                                                                    />
+                                                                </FormField>
+                                                            </div>
+                                                        </div>
+                                                    </>
+                                                ) : (
+                                                    <InfoBanner variant="info" title="CAM++ diarization">
+                                                        Optimized for Chinese conversational audio. Use Pyannote for comparison.
+                                                    </InfoBanner>
+                                                )}
+                                            </div>
                                         )}
                                     </div>
                                 </Section>
@@ -608,28 +683,104 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                             </Section>
 
                             {!isMultiTrack && (
-                                <Section title="Speaker Diarization" description="Separate speakers with CAM++ diarization">
+                                <Section title="Speaker Diarization" description="Separate speakers with CAM++ or Pyannote">
                                     <div className="space-y-4">
                                         <div className="flex items-center gap-3">
                                             <Switch
                                                 id="qwen_diarize"
                                                 checked={params.diarize}
-                                                onCheckedChange={(v) => {
-                                                    updateParam('diarize', v);
-                                                    if (v) {
-                                                        updateParam('diarize_model', 'funasr_campp');
-                                                    }
-                                                }}
+                                                onCheckedChange={(v) => updateParam('diarize', v)}
                                             />
                                             <label htmlFor="qwen_diarize" className="text-sm text-[var(--text-primary)] cursor-pointer">
-                                                Enable speaker identification (CAM++)
+                                                Enable speaker identification
                                             </label>
                                         </div>
 
                                         {params.diarize && (
-                                            <InfoBanner variant="info" title="Diarization Model: CAM++">
-                                                CAM++ is currently used for Qwen3-ASR diarization in this deployment.
-                                            </InfoBanner>
+                                            <div className="p-4 bg-[var(--bg-main)] rounded-xl border border-[var(--border-subtle)] space-y-4">
+                                                <FormField label="Diarization Model">
+                                                    <Select value={params.diarize_model} onValueChange={(v) => updateParam('diarize_model', v)}>
+                                                        <SelectTrigger className={selectTriggerClassName}>
+                                                            <SelectValue />
+                                                        </SelectTrigger>
+                                                        <SelectContent className={selectContentClassName}>
+                                                            <SelectItem value="funasr_campp" className={selectItemClassName}>FunASR CAM++</SelectItem>
+                                                            <SelectItem value="pyannote" className={selectItemClassName}>Pyannote</SelectItem>
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormField>
+
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <FormField label="Min Speakers" optional>
+                                                        <Input
+                                                            type="number"
+                                                            min={1}
+                                                            max={20}
+                                                            placeholder="Auto"
+                                                            value={params.min_speakers || ""}
+                                                            onChange={(e) => updateParam('min_speakers', e.target.value ? parseInt(e.target.value) : undefined)}
+                                                            className={inputClassName}
+                                                        />
+                                                    </FormField>
+                                                    <FormField label="Max Speakers" optional>
+                                                        <Input
+                                                            type="number"
+                                                            min={1}
+                                                            max={20}
+                                                            placeholder="Auto"
+                                                            value={params.max_speakers || ""}
+                                                            onChange={(e) => updateParam('max_speakers', e.target.value ? parseInt(e.target.value) : undefined)}
+                                                            className={inputClassName}
+                                                        />
+                                                    </FormField>
+                                                </div>
+
+                                                {params.diarize_model === "pyannote" ? (
+                                                    <>
+                                                        <FormField label="Hugging Face Token">
+                                                            <Input
+                                                                type="password"
+                                                                placeholder="hf_..."
+                                                                value={params.hf_token || ""}
+                                                                onChange={(e) => updateParam('hf_token', e.target.value || undefined)}
+                                                                className={inputClassName}
+                                                            />
+                                                        </FormField>
+
+                                                        <div className="pt-3 border-t border-[var(--border-subtle)]">
+                                                            <p className="text-xs text-[var(--text-tertiary)] mb-3">Voice Detection Tuning (for noisy/distant audio)</p>
+                                                            <div className="grid grid-cols-2 gap-4">
+                                                                <FormField label="VAD Onset" description={PARAM_DESCRIPTIONS.vad_onset}>
+                                                                    <Input
+                                                                        type="number"
+                                                                        min={0.1}
+                                                                        max={0.9}
+                                                                        step={0.05}
+                                                                        value={params.vad_onset}
+                                                                        onChange={(e) => updateParam('vad_onset', parseFloat(e.target.value) || 0.5)}
+                                                                        className={inputClassName}
+                                                                    />
+                                                                </FormField>
+                                                                <FormField label="VAD Offset" description={PARAM_DESCRIPTIONS.vad_offset}>
+                                                                    <Input
+                                                                        type="number"
+                                                                        min={0.1}
+                                                                        max={0.9}
+                                                                        step={0.05}
+                                                                        value={params.vad_offset}
+                                                                        onChange={(e) => updateParam('vad_offset', parseFloat(e.target.value) || 0.363)}
+                                                                        className={inputClassName}
+                                                                    />
+                                                                </FormField>
+                                                            </div>
+                                                        </div>
+                                                    </>
+                                                ) : (
+                                                    <InfoBanner variant="info" title="CAM++ diarization">
+                                                        Good default for Chinese-heavy meetings. Switch to Pyannote when speaker overlap is heavy.
+                                                    </InfoBanner>
+                                                )}
+                                            </div>
                                         )}
                                     </div>
                                 </Section>

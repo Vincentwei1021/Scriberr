@@ -23,7 +23,7 @@ func newJSONContext(body string) *gin.Context {
 	return c
 }
 
-func TestGetValidatedTranscriptionParams_ForceCudaForFireRedAndCAMPP(t *testing.T) {
+func TestGetValidatedTranscriptionParams_ForceCudaForFireRedAndPreserveSelectedDiarizeModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handler{}
 
@@ -33,7 +33,7 @@ func TestGetValidatedTranscriptionParams_ForceCudaForFireRedAndCAMPP(t *testing.
 	require.NoError(t, err)
 	require.NotNil(t, params)
 	assert.Equal(t, "cuda", params.Device)
-	assert.Equal(t, transcription.DiarizeCAMPP, params.DiarizeModel)
+	assert.Equal(t, "pyannote", params.DiarizeModel)
 }
 
 func TestGetValidatedTranscriptionParams_ForceCudaForQwen(t *testing.T) {
@@ -58,4 +58,17 @@ func TestGetValidatedTranscriptionParams_KeepWhisperDevice(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, params)
 	assert.Equal(t, "cpu", params.Device)
+}
+
+func TestGetValidatedTranscriptionParams_DefaultCamppWhenQwenDiarizeModelOmitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{}
+
+	ctx := newJSONContext(`{"model_family":"qwen","model":"Qwen/Qwen3-ASR-1.7B","device":"cpu","diarize":true}`)
+	params, err := h.getValidatedTranscriptionParams(ctx, &models.TranscriptionJob{}, "job-qwen-default")
+
+	require.NoError(t, err)
+	require.NotNil(t, params)
+	assert.Equal(t, "cuda", params.Device)
+	assert.Equal(t, transcription.DiarizeCAMPP, params.DiarizeModel)
 }

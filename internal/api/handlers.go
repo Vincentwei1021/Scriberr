@@ -1119,8 +1119,12 @@ func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.Tr
 		requestParams.Device = "cuda"
 	}
 
-	// FireRed/Qwen deployments should use CAM++ when diarization is enabled.
-	if (requestParams.ModelFamily == "firered" || requestParams.ModelFamily == "qwen") && requestParams.Diarize {
+	// FireRed/Qwen deployments default to CAM++ only when diarization model is omitted.
+	// If caller explicitly chooses pyannote/funasr_campp, preserve that selection.
+	if (requestParams.ModelFamily == "firered" || requestParams.ModelFamily == "qwen") &&
+		requestParams.Diarize &&
+		(strings.TrimSpace(requestParams.DiarizeModel) == "" ||
+			requestParams.DiarizeModel == transcription.ModelDiarization31) {
 		requestParams.DiarizeModel = transcription.DiarizeCAMPP
 	}
 

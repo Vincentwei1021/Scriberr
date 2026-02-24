@@ -29,7 +29,7 @@ services:
       - SECURE_COOKIES=false
       - OPENAI_API_KEY=sk-placeholder
       - OPENAI_BASE_URL=http://litellm:4000/v1
-      - ENABLED_ADAPTERS=firered_asr,qwen3_asr,campp
+      - ENABLED_ADAPTERS=firered_asr,qwen3_asr,campp,pyannote
 
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
