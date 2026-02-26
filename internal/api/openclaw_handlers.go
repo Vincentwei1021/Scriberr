@@ -213,7 +213,7 @@ type transcriptSegmentForSRT struct {
 }
 
 type transcriptPayloadForSRT struct {
-	Text     string                    `json:"text"`
+	Text     string                  `json:"text"`
 	Segments []transcriptSegmentForSRT `json:"segments"`
 }
 

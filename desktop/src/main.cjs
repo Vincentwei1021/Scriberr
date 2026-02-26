@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, session, desktopCapturer, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, session, systemPreferences, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
@@ -311,20 +311,24 @@ function setupPermissionHandlers() {
     callback(isMediaPermission(permission));
   });
 
-  if (typeof ses.setDisplayMediaRequestHandler === 'function') {
-    ses.setDisplayMediaRequestHandler(async (_request, callback) => {
-      try {
-        const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
-        callback({
-          video: sources[0] || null,
-          audio: 'loopback'
-        });
-      } catch (error) {
-        console.error('Display media request handler failed:', error);
-        callback({ video: null, audio: null });
+  // Handle getDisplayMedia requests from webviews.
+  // In Electron 25+, the native Chromium picker does not work inside <webview> tags,
+  // so we must handle the request explicitly via setDisplayMediaRequestHandler.
+  // Since the app only needs system audio (video is discarded immediately),
+  // auto-select the primary screen and enable loopback audio capture.
+  ses.setDisplayMediaRequestHandler(async (_request, callback) => {
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen'] });
+      if (sources.length > 0) {
+        callback({ video: sources[0], audio: 'loopback' });
+      } else {
+        callback({});
       }
-    }, { useSystemPicker: true });
-  }
+    } catch (error) {
+      console.error('Display media request failed:', error);
+      callback({});
+    }
+  });
 }
 
 async function ensureMacPermissions() {
