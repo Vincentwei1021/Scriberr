@@ -10,7 +10,9 @@ import {
 	Check,
 	AlertCircle,
 	Clock,
-	X
+	X,
+	Users,
+	Send
 } from "lucide-react";
 import { WandAdvancedIcon } from "@/components/icons/WandAdvancedIcon";
 // Checkbox removed
@@ -38,6 +40,9 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/features/auth/hooks/useAuth";
 import { useAudioListInfinite, type AudioFile } from "@/features/transcription/hooks/useAudioFiles";
 import { useTranscriptionEvents } from "@/features/transcription/hooks/useTranscriptionEvents";
+import { SendToOpenClawDialog } from "./audio-detail/SendToOpenClawDialog";
+import { useTranscript } from "@/features/transcription/hooks/useAudioDetail";
+import SpeakerRenameDialog from "./audio-detail/SpeakerRenameDialog";
 
 const JobStatusMonitor = memo(function JobStatusMonitor({ jobId }: { jobId: string }) {
 	useTranscriptionEvents(jobId);
@@ -236,6 +241,14 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 	const [transcribeDDialogOpen, setTranscribeDDialogOpen] = useState(false);
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const [trackProgress, setTrackProgress] = useState<Record<string, any>>({});
+	const [sendOpenClawDialogOpen, setSendOpenClawDialogOpen] = useState(false);
+	const [selectedOpenClawFile, setSelectedOpenClawFile] = useState<AudioFile | null>(null);
+	const [speakerRenameDialogOpen, setSpeakerRenameDialogOpen] = useState(false);
+	const [selectedSpeakerRenameFile, setSelectedSpeakerRenameFile] = useState<AudioFile | null>(null);
+	const { data: speakerRenameTranscript } = useTranscript(
+		selectedSpeakerRenameFile?.id ?? "",
+		!!selectedSpeakerRenameFile && speakerRenameDialogOpen
+	);
 
 	// Dialog state management
 	const [stopDialogOpen, setStopDialogOpen] = useState(false);
@@ -308,6 +321,27 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 		setSelectedJobId(jobId);
 		setTranscribeDDialogOpen(true);
 	}, []);
+
+	const handleSendOpenClawClick = useCallback((file: AudioFile) => {
+		setSelectedOpenClawFile(file);
+		setSendOpenClawDialogOpen(true);
+	}, []);
+
+	const handleRenameSpeakersClick = useCallback((file: AudioFile) => {
+		setSelectedSpeakerRenameFile(file);
+		setSpeakerRenameDialogOpen(true);
+	}, []);
+
+	const detectedSpeakersForRename = useMemo(() => {
+		if (!speakerRenameTranscript?.segments) return [];
+		const speakers = new Set<string>();
+		speakerRenameTranscript.segments.forEach((segment) => {
+			if (segment.speaker) {
+				speakers.add(segment.speaker);
+			}
+		});
+		return Array.from(speakers).sort();
+	}, [speakerRenameTranscript]);
 
 	// Handle actual transcription start with parameters
 	const handleStartTranscription = useCallback(async (params: WhisperXParams) => {
@@ -633,6 +667,30 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 
 		switch (status) {
 			case "completed":
+				if (file.openclaw_sent_at) {
+					const sentAt = new Date(file.openclaw_sent_at).toLocaleString();
+					const profileLabel = file.openclaw_profile_name ? ` via ${file.openclaw_profile_name}` : "";
+					return (
+						<div className="flex items-center gap-2">
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<div className="cursor-help text-emerald-500">
+										<Check className="h-5 w-5" strokeWidth={2.5} />
+									</div>
+								</TooltipTrigger>
+								<TooltipContent>Completed</TooltipContent>
+							</Tooltip>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<div className="cursor-help text-sky-600">
+										<Send className="h-4 w-4" strokeWidth={2.5} />
+									</div>
+								</TooltipTrigger>
+								<TooltipContent>{`Sent to OpenClaw${profileLabel} at ${sentAt}`}</TooltipContent>
+							</Tooltip>
+						</div>
+					);
+				}
 				return (
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -808,14 +866,45 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 									{/* Right: Cluster (Actions • Status) */}
 									<div className="flex items-center gap-6">
 										{/* Desktop Actions (Hover) - Hidden on mobile */}
-										<div
-											className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-											onClick={(e) => e.stopPropagation()}
-										>
-											{(file.status !== "processing" && file.status !== "pending") && (
-												<>
-													<Tooltip>
-														<TooltipTrigger asChild>
+						<div
+							className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+							onClick={(e) => e.stopPropagation()}
+						>
+							{file.status === "completed" && (
+								<>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												variant="ghost"
+												size="icon"
+												onClick={() => handleSendOpenClawClick(file)}
+												className="h-9 w-9 rounded-lg text-gray-400 hover:text-sky-600 hover:bg-sky-50 cursor-pointer transition-colors"
+											>
+												<Send className="h-5 w-5" strokeWidth={2} />
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent>Send to OpenClaw</TooltipContent>
+									</Tooltip>
+									<Tooltip>
+										<TooltipTrigger asChild>
+												<Button
+													variant="ghost"
+													size="icon"
+													onClick={() => handleRenameSpeakersClick(file)}
+													className="h-9 w-9 rounded-lg text-gray-400 hover:text-[var(--brand-solid)] hover:bg-orange-50 cursor-pointer transition-colors"
+												>
+													<Users className="h-5 w-5" strokeWidth={2} />
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent>Rename Speakers</TooltipContent>
+									</Tooltip>
+								</>
+							)}
+
+							{(file.status !== "processing" && file.status !== "pending" && file.status !== "completed") && (
+								<>
+									<Tooltip>
+										<TooltipTrigger asChild>
 															<Button
 																variant="ghost"
 																size="icon"
@@ -875,11 +964,11 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 											)}
 										</div>
 
-										{/* Status Icon */}
-										<div className="flex items-center justify-center w-6">
-											{getStatusIcon(file)}
-										</div>
-									</div>
+						{/* Status Icon */}
+						<div className="flex items-center justify-center">
+							{getStatusIcon(file)}
+						</div>
+					</div>
 								</div>
 							</SwipeableItem>
 						))}
@@ -1091,6 +1180,36 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 			{activeJobs.map(job => (
 				<JobStatusMonitor key={job.id} jobId={job.id} />
 			))}
+
+			{selectedOpenClawFile && (
+				<SendToOpenClawDialog
+					open={sendOpenClawDialogOpen}
+					onOpenChange={setSendOpenClawDialogOpen}
+					audioId={selectedOpenClawFile.id}
+					title={selectedOpenClawFile.title}
+					onSent={() => {
+						void refetch();
+					}}
+				/>
+			)}
+
+			{selectedSpeakerRenameFile && (
+				<SpeakerRenameDialog
+					open={speakerRenameDialogOpen}
+					onOpenChange={(open) => {
+						setSpeakerRenameDialogOpen(open);
+						if (!open) {
+							setSelectedSpeakerRenameFile(null);
+						}
+					}}
+					transcriptionId={selectedSpeakerRenameFile.id}
+					initialSpeakers={detectedSpeakersForRename}
+					transcriptSegments={speakerRenameTranscript?.segments || []}
+					onSpeakerMappingsUpdate={() => {
+						void refetch();
+					}}
+				/>
+			)}
 		</div >
 	);
 });

@@ -15,9 +15,10 @@ interface SendToOpenClawDialogProps {
 	onOpenChange: (open: boolean) => void;
 	audioId: string;
 	title?: string;
+	onSent?: () => void;
 }
 
-export function SendToOpenClawDialog({ open, onOpenChange, audioId, title }: SendToOpenClawDialogProps) {
+export function SendToOpenClawDialog({ open, onOpenChange, audioId, title, onSent }: SendToOpenClawDialogProps) {
 	const { getAuthHeaders } = useAuth();
 	const { toast } = useToast();
 
@@ -83,6 +84,7 @@ export function SendToOpenClawDialog({ open, onOpenChange, audioId, title }: Sen
 				title: "Sent to OpenClaw",
 				description: `${title || "This transcript"} was sent successfully.`,
 			});
+			onSent?.();
 			onOpenChange(false);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Failed to send to OpenClaw");

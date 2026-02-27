@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -36,8 +36,44 @@ export function Header({ onFileSelect, onMultiTrackClick, onDownloadComplete }: 
 	const videoFileInputRef = useRef<HTMLInputElement>(null);
 	const [isRecorderOpen, setIsRecorderOpen] = useState(false);
 	const [isSystemRecorderOpen, setIsSystemRecorderOpen] = useState(false);
+	const [floatingRecordingBlob, setFloatingRecordingBlob] = useState<Blob | null>(null);
 	const [isQuickTranscriptionOpen, setIsQuickTranscriptionOpen] = useState(false);
 	const [isYouTubeDialogOpen, setIsYouTubeDialogOpen] = useState(false);
+
+	// Listen for floating window recording data from Electron desktop app
+	const handleFloatingRecording = useCallback((event: CustomEvent<{ file: File }>) => {
+		if (event.detail?.file) {
+			setFloatingRecordingBlob(event.detail.file);
+			setIsSystemRecorderOpen(true);
+		}
+	}, []);
+
+	useEffect(() => {
+		window.addEventListener('scriberr:floating-recording', handleFloatingRecording as EventListener);
+		return () => window.removeEventListener('scriberr:floating-recording', handleFloatingRecording as EventListener);
+	}, [handleFloatingRecording]);
+
+	useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			const target = event.target as HTMLElement | null;
+			const tagName = target?.tagName?.toLowerCase();
+			const isTypingTarget =
+				tagName === "input" ||
+				tagName === "textarea" ||
+				tagName === "select" ||
+				!!target?.isContentEditable;
+			if (isTypingTarget) return;
+
+			// Record System Audio shortcut: Cmd/Ctrl + Shift + A
+			if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "a") {
+				event.preventDefault();
+				setIsSystemRecorderOpen(true);
+			}
+		};
+
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, []);
 
 	// Use global upload context as fallback when props are not provided
 	const globalUpload = useGlobalUpload();
@@ -236,11 +272,14 @@ export function Header({ onFileSelect, onMultiTrackClick, onDownloadComplete }: 
 								<div className="p-2 bg-blue-500/10 rounded-[var(--radius-btn)] text-blue-600 group-focus:text-[var(--brand-solid)]">
 									<MonitorSpeaker className="h-4 w-4" />
 								</div>
-								<div>
+								<div className="flex-1">
 									<div className="font-medium text-sm">Record System Audio</div>
 									<div className="text-xs text-[var(--text-secondary)]">
 										Capture screen + microphone
 									</div>
+								</div>
+								<div className="text-[10px] text-[var(--text-tertiary)] self-start mt-1">
+									⌘/Ctrl+Shift+A
 								</div>
 							</DropdownMenuItem>
 							<DropdownMenuItem
@@ -259,6 +298,18 @@ export function Header({ onFileSelect, onMultiTrackClick, onDownloadComplete }: 
 							</DropdownMenuItem>
 						</DropdownMenuContent>
 					</DropdownMenu>
+
+					{/* Quick System Audio Record (visible shortcut button) */}
+					<Button
+						variant="outline"
+						size="icon"
+						onClick={handleSystemRecordClick}
+						title="Record System Audio (⌘/Ctrl+Shift+A)"
+						className="h-8 w-8 sm:h-10 sm:w-10 rounded-lg border-[var(--border-subtle)] bg-[var(--bg-card)] hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all cursor-pointer"
+					>
+						<MonitorSpeaker className="h-4 w-4 sm:h-5 sm:w-5 text-blue-600" />
+						<span className="sr-only">Record System Audio</span>
+					</Button>
 
 					{/* Main Menu (Grip) */}
 					<DropdownMenu>
@@ -323,8 +374,9 @@ export function Header({ onFileSelect, onMultiTrackClick, onDownloadComplete }: 
 			{/* System Audio Recorder Dialog */}
 			<SystemAudioRecorder
 				isOpen={isSystemRecorderOpen}
-				onClose={() => setIsSystemRecorderOpen(false)}
+				onClose={() => { setIsSystemRecorderOpen(false); setFloatingRecordingBlob(null); }}
 				onRecordingComplete={effectiveRecordingComplete}
+				initialBlob={floatingRecordingBlob}
 			/>
 
 			{/* Quick Transcription Dialog */}

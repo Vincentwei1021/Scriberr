@@ -101,6 +101,9 @@ func (s *OpenClawService) SendSRT(ctx context.Context, profile *models.OpenClawP
 		"-i", keyPath,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=3",
 		localPath,
 		fmt.Sprintf("%s:%s", profile.IP, remotePath),
 	}
@@ -141,6 +144,9 @@ func (s *OpenClawService) SendSRT(ctx context.Context, profile *models.OpenClawP
 		"-i", keyPath,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=3",
 		profile.IP,
 		remoteCmd,
 	}

@@ -5,6 +5,8 @@ export interface AudioFile {
     id: string;
     title?: string;
     status: "uploaded" | "pending" | "processing" | "completed" | "failed";
+    openclaw_sent_at?: string | null;
+    openclaw_profile_name?: string | null;
     created_at: string;
     audio_path: string;
     diarization?: boolean;

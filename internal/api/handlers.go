@@ -1020,6 +1020,8 @@ func (h *Handler) StartTranscription(c *gin.Context) {
 	job.Transcript = nil
 	job.Summary = nil
 	job.ErrorMessage = nil
+	job.OpenClawSentAt = nil
+	job.OpenClawProfileName = nil
 
 	// Save updated job
 	if err := h.jobRepo.Update(c.Request.Context(), job); err != nil {

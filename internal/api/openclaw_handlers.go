@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"scriberr/internal/models"
 
@@ -136,7 +137,7 @@ func (h *Handler) SendTranscriptionToOpenClaw(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "OpenClaw service is not initialized"})
 		return
 	}
-	if authType, exists := c.Get("auth_type"); !exists || authType != "jwt" {
+	if authType, exists := c.Get("auth_type"); !exists || (authType != "jwt" && authType != "disabled") {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "JWT authentication required"})
 		return
 	}
@@ -194,6 +195,14 @@ func (h *Handler) SendTranscriptionToOpenClaw(c *gin.Context) {
 	result, err := h.openClawService.SendSRT(c.Request.Context(), profile, srt, title, job.ID)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to send to OpenClaw: " + err.Error()})
+		return
+	}
+
+	now := time.Now()
+	job.OpenClawSentAt = &now
+	job.OpenClawProfileName = &profile.Name
+	if err := h.jobRepo.Update(c.Request.Context(), job); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist OpenClaw send status"})
 		return
 	}
 

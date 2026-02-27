@@ -24,6 +24,8 @@ type TranscriptionJob struct {
 	MergeStatus           string         `json:"merge_status" gorm:"type:varchar(20);default:'none'"` // none, pending, processing, completed, failed
 	MergeError            *string        `json:"merge_error,omitempty" gorm:"type:text"`
 	IndividualTranscripts *string        `json:"individual_transcripts,omitempty" gorm:"type:text"` // JSON-serialized map[string]*string
+	OpenClawSentAt        *time.Time     `json:"openclaw_sent_at,omitempty" gorm:"type:datetime"`
+	OpenClawProfileName   *string        `json:"openclaw_profile_name,omitempty" gorm:"type:varchar(255)"`
 	CreatedAt             time.Time      `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt             time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
 	DeletedAt             gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index" swaggertype:"string"`

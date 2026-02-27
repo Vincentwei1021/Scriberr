@@ -3,12 +3,15 @@ import {
     useContext,
     useState,
     useCallback,
+    useEffect,
+    useRef,
     type PropsWithChildren,
 } from "react";
 import { useLocation } from "react-router-dom";
 import { useAudioUpload, useMultiTrackUpload } from "@/features/transcription/hooks/useAudioFiles";
 import { useToast } from "@/components/ui/toast";
 import { MultiTrackUploadDialog } from "@/features/transcription/components/MultiTrackUploadDialog";
+import { useAuth } from "@/features/auth/hooks/useAuth";
 
 // Types
 interface FileWithType {
@@ -20,6 +23,17 @@ interface UploadProgress {
     fileName: string;
     status: "uploading" | "success" | "error";
     error?: string;
+}
+
+interface OpenClawProfileSummary {
+    id: string;
+    name: string;
+}
+
+interface PendingOpenClawSend {
+    jobId: string;
+    profileId: string;
+    title?: string;
 }
 
 interface GlobalUploadContextValue {
@@ -41,6 +55,14 @@ interface GlobalUploadContextValue {
     uploadProgress: UploadProgress[];
     // For Dashboard to render its own progress bar
     isOnDashboard: boolean;
+    sendToOpenClawAfterTranscription: boolean;
+    setSendToOpenClawAfterTranscription: (enabled: boolean) => void;
+    selectedOpenClawProfileId: string;
+    setSelectedOpenClawProfileId: (profileId: string) => void;
+    openClawProfiles: OpenClawProfileSummary[];
+    openClawProfilesLoading: boolean;
+    openClawProfilesError: string;
+    refreshOpenClawProfiles: () => Promise<void>;
 }
 
 const GlobalUploadContext = createContext<GlobalUploadContextValue | null>(
@@ -51,6 +73,7 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
     const { mutateAsync: uploadFile } = useAudioUpload();
     const { mutateAsync: uploadMultiTrack } = useMultiTrackUpload();
     const { toast } = useToast();
+    const { getAuthHeaders } = useAuth();
     const location = useLocation();
 
     // Check if we're on the dashboard (home page)
@@ -59,6 +82,12 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
     // Upload state
     const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
     const [isUploading, setIsUploading] = useState(false);
+    const [sendToOpenClawAfterTranscription, setSendToOpenClawAfterTranscription] = useState(false);
+    const [selectedOpenClawProfileId, setSelectedOpenClawProfileId] = useState("");
+    const [openClawProfiles, setOpenClawProfiles] = useState<OpenClawProfileSummary[]>([]);
+    const [openClawProfilesLoading, setOpenClawProfilesLoading] = useState(false);
+    const [openClawProfilesError, setOpenClawProfilesError] = useState("");
+    const [pendingOpenClawSends, setPendingOpenClawSends] = useState<PendingOpenClawSend[]>([]);
 
     // Multi-track dialog state
     const [isMultiTrackDialogOpen, setIsMultiTrackDialogOpen] = useState(false);
@@ -67,6 +96,141 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
         aupFile: File;
         title: string;
     } | null>(null);
+
+    const refreshOpenClawProfiles = useCallback(async () => {
+        try {
+            setOpenClawProfilesLoading(true);
+            setOpenClawProfilesError("");
+            const res = await fetch("/api/v1/openclaw/profiles", {
+                headers: getAuthHeaders(),
+            });
+            if (!res.ok) {
+                throw new Error("Failed to load OpenClaw profiles");
+            }
+            const data = await res.json();
+            const nextProfiles = Array.isArray(data)
+                ? data.filter((item): item is OpenClawProfileSummary => {
+                    return !!item && typeof item.id === "string" && typeof item.name === "string";
+                })
+                : [];
+            setOpenClawProfiles(nextProfiles);
+            setSelectedOpenClawProfileId((prev) => {
+                if (prev && nextProfiles.some((profile) => profile.id === prev)) {
+                    return prev;
+                }
+                return nextProfiles[0]?.id ?? "";
+            });
+        } catch (error) {
+            setOpenClawProfilesError(error instanceof Error ? error.message : "Failed to load OpenClaw profiles");
+            setOpenClawProfiles([]);
+            setSelectedOpenClawProfileId("");
+        } finally {
+            setOpenClawProfilesLoading(false);
+        }
+    }, [getAuthHeaders]);
+
+    useEffect(() => {
+        if (!isOnDashboard) return;
+        void refreshOpenClawProfiles();
+    }, [isOnDashboard, refreshOpenClawProfiles]);
+
+    const queueOpenClawSend = useCallback((jobId: string, profileId: string, title?: string) => {
+        if (!jobId || !profileId) return;
+        setPendingOpenClawSends((prev) => {
+            if (prev.some((item) => item.jobId === jobId)) {
+                return prev;
+            }
+            return [...prev, { jobId, profileId, title }];
+        });
+    }, []);
+
+    const pendingOpenClawSendsRef = useRef<PendingOpenClawSend[]>([]);
+    useEffect(() => {
+        pendingOpenClawSendsRef.current = pendingOpenClawSends;
+    }, [pendingOpenClawSends]);
+
+    useEffect(() => {
+        if (pendingOpenClawSends.length === 0) return;
+
+        let cancelled = false;
+        let polling = false;
+
+        const removePendingJob = (jobId: string) => {
+            setPendingOpenClawSends((prev) => prev.filter((item) => item.jobId !== jobId));
+        };
+
+        const pollOpenClawQueue = async () => {
+            if (cancelled || polling) return;
+            polling = true;
+            try {
+                const currentQueue = pendingOpenClawSendsRef.current;
+                for (const pendingItem of currentQueue) {
+                    if (cancelled) break;
+
+                    const jobRes = await fetch(`/api/v1/transcription/${pendingItem.jobId}`, {
+                        headers: getAuthHeaders(),
+                    });
+
+                    if (jobRes.status === 404) {
+                        removePendingJob(pendingItem.jobId);
+                        continue;
+                    }
+
+                    if (!jobRes.ok) {
+                        continue;
+                    }
+
+                    const jobData = await jobRes.json() as { status?: string; title?: string };
+                    if (jobData.status === "completed") {
+                        const sendRes = await fetch(`/api/v1/transcription/${pendingItem.jobId}/send-openclaw`, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                ...getAuthHeaders(),
+                            },
+                            body: JSON.stringify({ profile_id: pendingItem.profileId }),
+                        });
+
+                        if (sendRes.ok) {
+                            toast({
+                                title: "Sent to OpenClaw",
+                                description: `${jobData.title || pendingItem.title || "Transcript"} sent automatically after transcription.`,
+                            });
+                        } else {
+                            const errText = await sendRes.text();
+                            toast({
+                                title: "OpenClaw Send Failed",
+                                description: errText || "Failed to send transcript to OpenClaw automatically.",
+                            });
+                        }
+
+                        removePendingJob(pendingItem.jobId);
+                        continue;
+                    }
+
+                    if (jobData.status === "failed") {
+                        toast({
+                            title: "Transcription Failed",
+                            description: `${jobData.title || pendingItem.title || "Transcript"} failed, skipped automatic OpenClaw send.`,
+                        });
+                        removePendingJob(pendingItem.jobId);
+                    }
+                }
+            } finally {
+                polling = false;
+            }
+        };
+
+        void pollOpenClawQueue();
+        const timer = window.setInterval(() => {
+            void pollOpenClawQueue();
+        }, 5000);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [pendingOpenClawSends.length, getAuthHeaders, toast]);
 
     const handleFileSelect = useCallback(
         async (files: File | File[] | FileWithType | FileWithType[]) => {
@@ -81,6 +245,14 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
             });
 
             if (processedFiles.length === 0) return;
+
+            const autoSendEnabled = sendToOpenClawAfterTranscription && !!selectedOpenClawProfileId;
+            if (sendToOpenClawAfterTranscription && !selectedOpenClawProfileId) {
+                toast({
+                    title: "OpenClaw Profile Required",
+                    description: "Enable auto-send requires selecting an OpenClaw profile first.",
+                });
+            }
 
             setIsUploading(true);
 
@@ -108,7 +280,7 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                 const isVideo = fileItem.isVideo;
 
                 try {
-                    await uploadFile({ file, isVideo });
+                    const uploadResult = await uploadFile({ file, isVideo }) as { id?: string; title?: string };
 
                     if (isOnDashboard) {
                         setUploadProgress((prev) =>
@@ -120,6 +292,10 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                         );
                     }
                     successCount++;
+
+                    if (autoSendEnabled && typeof uploadResult?.id === "string") {
+                        queueOpenClawSend(uploadResult.id, selectedOpenClawProfileId, uploadResult.title || file.name);
+                    }
                 } catch (error) {
                     if (isOnDashboard) {
                         setUploadProgress((prev) =>
@@ -160,7 +336,14 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                 setTimeout(() => setUploadProgress([]), 3000);
             }
         },
-        [isOnDashboard, uploadFile, toast]
+        [
+            isOnDashboard,
+            uploadFile,
+            toast,
+            sendToOpenClawAfterTranscription,
+            selectedOpenClawProfileId,
+            queueOpenClawSend,
+        ]
     );
 
     const handleMultiTrackUpload = useCallback(
@@ -182,7 +365,7 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
             }
 
             try {
-                await uploadMultiTrack({ files, aupFile, title });
+                const uploadResult = await uploadMultiTrack({ files, aupFile, title }) as { id?: string; title?: string };
 
                 if (isOnDashboard) {
                     setUploadProgress([
@@ -196,6 +379,15 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                     toast({
                         title: "Upload Complete",
                         description: `Successfully uploaded ${title}`,
+                    });
+                }
+
+                if (sendToOpenClawAfterTranscription && selectedOpenClawProfileId && typeof uploadResult?.id === "string") {
+                    queueOpenClawSend(uploadResult.id, selectedOpenClawProfileId, uploadResult.title || title);
+                } else if (sendToOpenClawAfterTranscription && !selectedOpenClawProfileId) {
+                    toast({
+                        title: "OpenClaw Profile Required",
+                        description: "Enable auto-send requires selecting an OpenClaw profile first.",
                     });
                 }
             } catch (error) {
@@ -218,7 +410,14 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                 setIsUploading(false);
             }
         },
-        [isOnDashboard, uploadMultiTrack, toast]
+        [
+            isOnDashboard,
+            uploadMultiTrack,
+            toast,
+            sendToOpenClawAfterTranscription,
+            selectedOpenClawProfileId,
+            queueOpenClawSend,
+        ]
     );
 
     const openMultiTrackDialog = useCallback(() => {
@@ -256,6 +455,14 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
         isUploading,
         uploadProgress,
         isOnDashboard,
+        sendToOpenClawAfterTranscription,
+        setSendToOpenClawAfterTranscription,
+        selectedOpenClawProfileId,
+        setSelectedOpenClawProfileId,
+        openClawProfiles,
+        openClawProfilesLoading,
+        openClawProfilesError,
+        refreshOpenClawProfiles,
     };
 
     return (

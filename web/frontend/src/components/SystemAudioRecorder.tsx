@@ -13,6 +13,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
 	Dialog,
 	DialogContent,
@@ -29,18 +32,40 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
+import { useGlobalUpload } from "@/contexts/GlobalUploadContext";
 
 interface SystemAudioRecorderProps {
 	isOpen: boolean;
 	onClose: () => void;
 	onRecordingComplete: (blob: Blob, title: string) => void;
+	initialBlob?: Blob | null;
+}
+
+interface DesktopRecorderBridge {
+	isDesktop?: boolean;
+	openFloatingRecorder?: () => void;
 }
 
 export function SystemAudioRecorder({
 	isOpen,
 	onClose,
 	onRecordingComplete,
+	initialBlob,
 }: SystemAudioRecorderProps) {
+	const {
+		sendToOpenClawAfterTranscription,
+		setSendToOpenClawAfterTranscription,
+		selectedOpenClawProfileId,
+		setSelectedOpenClawProfileId,
+		openClawProfiles,
+		openClawProfilesLoading,
+		openClawProfilesError,
+		refreshOpenClawProfiles,
+	} = useGlobalUpload();
+
+	const desktopBridge = (window as Window & { scriberrDesktopBridge?: DesktopRecorderBridge })
+		.scriberrDesktopBridge;
+
 	// Recording state
 	const [isRecording, setIsRecording] = useState(false);
 	const [recordingTime, setRecordingTime] = useState(0);
@@ -74,7 +99,134 @@ export function SystemAudioRecorder({
 	const [permissionDenied, setPermissionDenied] = useState(false);
 	const [micAvailable, setMicAvailable] = useState(true);
 
+	// Realtime ASR state
+	const [realtimeStatus, setRealtimeStatus] = useState<"idle" | "connecting" | "ready" | "error">("idle");
+	const [realtimeError, setRealtimeError] = useState("");
+	const [liveTranscript, setLiveTranscript] = useState("");
+	const realtimeSocketRef = useRef<WebSocket | null>(null);
+	const realtimeAudioContextRef = useRef<AudioContext | null>(null);
+	const realtimeProcessorRef = useRef<ScriptProcessorNode | null>(null);
+	const realtimeSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+	const realtimeSinkRef = useRef<GainNode | null>(null);
+	const realtimeReadyRef = useRef(false);
+	const recordingStartedAtRef = useRef<number | null>(null);
+
 	const { toast } = useToast();
+
+	// Realtime ASR helpers
+	const formatBeijingTimestamp = () =>
+		new Intl.DateTimeFormat("zh-CN", {
+			timeZone: "Asia/Shanghai",
+			hour12: false,
+			hour: "2-digit",
+			minute: "2-digit",
+			second: "2-digit",
+		}).format(new Date());
+
+	const getBlobDurationMs = async (blob: Blob): Promise<number> => {
+		const objectUrl = URL.createObjectURL(blob);
+		try {
+			const durationSeconds = await new Promise<number>((resolve, reject) => {
+				const audio = document.createElement("audio");
+				audio.preload = "metadata";
+				audio.src = objectUrl;
+				audio.onloadedmetadata = () => resolve(audio.duration);
+				audio.onerror = () => reject(new Error("Failed to read audio metadata"));
+			});
+			if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+				return 0;
+			}
+			return Math.round(durationSeconds * 1000);
+		} catch {
+			return 0;
+		} finally {
+			URL.revokeObjectURL(objectUrl);
+		}
+	};
+
+	const downsampleTo16k = (input: Float32Array, sourceSampleRate: number): Float32Array => {
+		if (sourceSampleRate === 16000) return input;
+		const ratio = sourceSampleRate / 16000;
+		const outputLength = Math.max(1, Math.round(input.length / ratio));
+		const output = new Float32Array(outputLength);
+		let offset = 0;
+		for (let i = 0; i < outputLength; i++) {
+			const nextOffset = Math.min(input.length, Math.round((i + 1) * ratio));
+			let total = 0, count = 0;
+			for (let j = offset; j < nextOffset; j++) { total += input[j]; count++; }
+			output[i] = count > 0 ? total / count : 0;
+			offset = nextOffset;
+		}
+		return output;
+	};
+
+	const cleanupRealtimeASR = () => {
+		realtimeReadyRef.current = false;
+		if (realtimeProcessorRef.current) { realtimeProcessorRef.current.onaudioprocess = null; realtimeProcessorRef.current.disconnect(); realtimeProcessorRef.current = null; }
+		if (realtimeSourceRef.current) { realtimeSourceRef.current.disconnect(); realtimeSourceRef.current = null; }
+		if (realtimeSinkRef.current) { realtimeSinkRef.current.disconnect(); realtimeSinkRef.current = null; }
+		if (realtimeAudioContextRef.current) { void realtimeAudioContextRef.current.close(); realtimeAudioContextRef.current = null; }
+		const socket = realtimeSocketRef.current;
+		realtimeSocketRef.current = null;
+		if (socket && socket.readyState === WebSocket.OPEN) { socket.close(1000, "recording_stopped"); }
+		setRealtimeStatus("idle");
+	};
+
+	const startRealtimeASR = (audioStream: MediaStream) => {
+		setRealtimeError("");
+		setLiveTranscript("");
+		setRealtimeStatus("connecting");
+
+		const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+		const url = `${protocol}://${window.location.host}/api/v1/transcription/realtime/ws`;
+		const socket = new WebSocket(url);
+		realtimeSocketRef.current = socket;
+
+		socket.onmessage = (event) => {
+			if (typeof event.data !== "string") return;
+			let payload: { type: string; text?: string; message?: string };
+			try { payload = JSON.parse(event.data); } catch { return; }
+			if (!payload?.type) return;
+
+			if (payload.type === "ready") {
+				setRealtimeStatus("ready");
+				realtimeReadyRef.current = true;
+				// Start audio capture pipeline
+				const ctx = new AudioContext();
+				realtimeAudioContextRef.current = ctx;
+				const source = ctx.createMediaStreamSource(audioStream);
+				realtimeSourceRef.current = source;
+				const processor = ctx.createScriptProcessor(4096, 1, 1);
+				realtimeProcessorRef.current = processor;
+				const sink = ctx.createGain();
+				sink.gain.value = 0;
+				realtimeSinkRef.current = sink;
+
+				processor.onaudioprocess = (e) => {
+					if (!realtimeReadyRef.current) return;
+					const ws = realtimeSocketRef.current;
+					if (!ws || ws.readyState !== WebSocket.OPEN) return;
+					const data = e.inputBuffer.getChannelData(0);
+					if (!data || data.length === 0) return;
+					const pcm16k = downsampleTo16k(new Float32Array(data), ctx.sampleRate);
+					if (pcm16k.length > 0) ws.send(pcm16k.buffer);
+				};
+
+				source.connect(processor);
+				processor.connect(sink);
+				sink.connect(ctx.destination);
+				} else if (payload.type === "text" && payload.text) {
+					const line = `[${formatBeijingTimestamp()}] ${payload.text}`;
+					setLiveTranscript((prev) => (prev ? `${prev}\n${line}` : line));
+				} else if (payload.type === "error") {
+					setRealtimeStatus("error");
+					setRealtimeError(payload.message || "Realtime transcription failed.");
+				}
+			};
+
+		socket.onerror = () => { setRealtimeStatus("error"); setRealtimeError("Failed to connect realtime ASR."); };
+		socket.onclose = () => { realtimeReadyRef.current = false; if (realtimeSocketRef.current) setRealtimeStatus("error"); };
+	};
 
 	// Browser compatibility check - only Chromium browsers supported
 	const checkCompatibility = (): { supported: boolean; error?: string } => {
@@ -105,6 +257,30 @@ export function SystemAudioRecorder({
 
 		return { supported: true };
 	};
+
+	// Load initial blob from floating window recording
+	useEffect(() => {
+		if (isOpen && initialBlob) {
+			setRecordedBlob(initialBlob);
+			setIsRecording(false);
+			let cancelled = false;
+			void (async () => {
+				const durationMs = await getBlobDurationMs(initialBlob);
+				if (!cancelled && durationMs > 0) {
+					setRecordingTime(durationMs);
+				}
+			})();
+			return () => {
+				cancelled = true;
+			};
+		}
+	}, [isOpen, initialBlob]);
+
+	useEffect(() => {
+		if (isOpen) {
+			void refreshOpenClawProfiles();
+		}
+	}, [isOpen, refreshOpenClawProfiles]);
 
 	// Initialize microphone device list when dialog opens
 	useEffect(() => {
@@ -254,6 +430,21 @@ export function SystemAudioRecorder({
 
 	// Start recording
 	const startRecording = async () => {
+		if (desktopBridge?.isDesktop && typeof desktopBridge.openFloatingRecorder === "function") {
+			desktopBridge.openFloatingRecorder();
+			setPermissionDenied(false);
+			setCompatibilityError(null);
+			setLiveTranscript("");
+			setRealtimeStatus("idle");
+			setRealtimeError("");
+			setIsRecording(false);
+			setRecordedBlob(null);
+			setTitle("");
+			setRecordingTime(0);
+			onClose();
+			return;
+		}
+
 		try {
 			setPermissionDenied(false);
 
@@ -356,6 +547,9 @@ export function SystemAudioRecorder({
 				const blob = new Blob(recordingChunksRef.current, {
 					type: recordingChunksRef.current[0]?.type || 'audio/webm'
 				});
+				const elapsedMs = recordingStartedAtRef.current ? Date.now() - recordingStartedAtRef.current : 0;
+				setRecordingTime((prev) => Math.max(prev, elapsedMs));
+				recordingStartedAtRef.current = null;
 				setRecordedBlob(blob);
 				setIsRecording(false);
 			};
@@ -366,6 +560,10 @@ export function SystemAudioRecorder({
 			setIsRecording(true);
 			setRecordingTime(0);
 			setRecordedBlob(null);
+			recordingStartedAtRef.current = Date.now();
+
+			// Step 5: Start realtime ASR on the system audio stream
+			void startRealtimeASR(sysStream);
 		} catch (error) {
 			console.error("Failed to start recording:", error);
 
@@ -387,9 +585,14 @@ export function SystemAudioRecorder({
 
 	// Stop recording
 	const stopRecording = () => {
+		if (recordingStartedAtRef.current) {
+			const elapsedMs = Date.now() - recordingStartedAtRef.current;
+			setRecordingTime((prev) => Math.max(prev, elapsedMs));
+		}
 		if (mediaRecorder && mediaRecorder.state !== 'inactive') {
 			mediaRecorder.stop();
 		}
+		cleanupRealtimeASR();
 		cleanupStreams();
 	};
 
@@ -451,6 +654,7 @@ export function SystemAudioRecorder({
 			setRecordedBlob(null);
 			setTitle("");
 			setRecordingTime(0);
+			setSendToOpenClawAfterTranscription(false);
 			onClose();
 		} catch (error) {
 			console.error("Failed to upload recording:", error);
@@ -465,6 +669,7 @@ export function SystemAudioRecorder({
 		if (isRecording) {
 			stopRecording();
 		}
+		cleanupRealtimeASR();
 		cleanupStreams();
 		setRecordedBlob(null);
 		setTitle("");
@@ -472,6 +677,11 @@ export function SystemAudioRecorder({
 		setIsRecording(false);
 		setPermissionDenied(false);
 		setCompatibilityError(null);
+		setLiveTranscript("");
+		setRealtimeStatus("idle");
+		setRealtimeError("");
+		recordingStartedAtRef.current = null;
+		setSendToOpenClawAfterTranscription(false);
 		onClose();
 	};
 
@@ -610,6 +820,56 @@ export function SystemAudioRecorder({
 							/>
 						</div>
 
+						<div className="space-y-3 p-4 border border-[var(--border-subtle)] rounded-[var(--radius-card)] bg-[var(--bg-card)]">
+							<div className="flex items-start gap-3">
+								<Checkbox
+									id="system-recorder-auto-send-openclaw"
+									checked={sendToOpenClawAfterTranscription}
+									onCheckedChange={(checked) => setSendToOpenClawAfterTranscription(checked === true)}
+									className="mt-0.5"
+								/>
+								<div>
+									<Label htmlFor="system-recorder-auto-send-openclaw" className="text-sm font-medium text-[var(--text-primary)] cursor-pointer">
+										Send to OpenClaw after transcription
+									</Label>
+									<p className="text-xs text-[var(--text-secondary)] mt-1">
+										Upload completes first, then system will auto-send to OpenClaw after ASR finishes.
+									</p>
+								</div>
+							</div>
+
+							<div className="flex items-center gap-2">
+								<Select
+									value={selectedOpenClawProfileId}
+									onValueChange={setSelectedOpenClawProfileId}
+									disabled={!sendToOpenClawAfterTranscription || openClawProfilesLoading || openClawProfiles.length === 0}
+								>
+									<SelectTrigger className="w-full">
+										<SelectValue placeholder={openClawProfilesLoading ? "Loading profiles..." : "Select OpenClaw profile"} />
+									</SelectTrigger>
+									<SelectContent>
+										{openClawProfiles.map((profile) => (
+											<SelectItem key={profile.id} value={profile.id}>
+												{profile.name}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+								<Button variant="outline" size="sm" onClick={() => void refreshOpenClawProfiles()}>
+									Refresh
+								</Button>
+							</div>
+
+							{openClawProfilesError && (
+								<p className="text-xs text-[var(--error)]">{openClawProfilesError}</p>
+							)}
+							{sendToOpenClawAfterTranscription && !openClawProfilesLoading && openClawProfiles.length === 0 && !openClawProfilesError && (
+								<p className="text-xs text-[var(--warning-solid)]">
+									No OpenClaw profiles found. Create one in Settings &gt; OpenClaw.
+								</p>
+							)}
+						</div>
+
 						{/* Upload Button */}
 						<Button
 							onClick={handleUpload}
@@ -714,6 +974,23 @@ export function SystemAudioRecorder({
 								</div>
 							</div>
 						)}
+
+						{/* Live Transcript */}
+						<div className="space-y-2">
+							<div className="text-sm font-medium text-[var(--text-primary)]">
+								Live Transcript (FireRedVAD)
+							</div>
+							<div className="rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)] p-3 min-h-[90px] max-h-[170px] overflow-y-auto text-sm text-[var(--text-primary)] whitespace-pre-wrap">
+								{liveTranscript || "Realtime text will appear here after speech segments are detected."}
+							</div>
+							<div className="text-xs text-[var(--text-tertiary)]">
+								{realtimeStatus === "connecting" ? "Initializing FireRed realtime ASR..." :
+								 realtimeStatus === "ready" ? "Realtime transcription running (FireRedVAD)" :
+								 realtimeStatus === "error" ? "Realtime transcription unavailable" :
+								 "Realtime transcription idle"}
+							</div>
+							{realtimeError && <div className="text-xs text-[var(--error)]">{realtimeError}</div>}
+						</div>
 
 						{/* Recording Controls */}
 						<div className="flex justify-center">
