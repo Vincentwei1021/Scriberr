@@ -34,16 +34,17 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import { useGlobalUpload } from "@/contexts/GlobalUploadContext";
 
+const SYSTEM_MIX_MULTIPLIER = 0.65;
+const MIC_MIX_MULTIPLIER = 1.45;
+
+const clampGain = (value: number) => Math.max(0, Math.min(2, value));
+
 interface SystemAudioRecorderProps {
 	isOpen: boolean;
 	onClose: () => void;
-	onRecordingComplete: (blob: Blob, title: string) => void;
+	onRecordingComplete: (blob: Blob, title: string, source?: string) => void;
 	initialBlob?: Blob | null;
-}
-
-interface DesktopRecorderBridge {
-	isDesktop?: boolean;
-	openFloatingRecorder?: () => void;
+	initialDurationMs?: number | null;
 }
 
 export function SystemAudioRecorder({
@@ -51,6 +52,7 @@ export function SystemAudioRecorder({
 	onClose,
 	onRecordingComplete,
 	initialBlob,
+	initialDurationMs,
 }: SystemAudioRecorderProps) {
 	const {
 		sendToOpenClawAfterTranscription,
@@ -62,9 +64,6 @@ export function SystemAudioRecorder({
 		openClawProfilesError,
 		refreshOpenClawProfiles,
 	} = useGlobalUpload();
-
-	const desktopBridge = (window as Window & { scriberrDesktopBridge?: DesktopRecorderBridge })
-		.scriberrDesktopBridge;
 
 	// Recording state
 	const [isRecording, setIsRecording] = useState(false);
@@ -263,18 +262,24 @@ export function SystemAudioRecorder({
 		if (isOpen && initialBlob) {
 			setRecordedBlob(initialBlob);
 			setIsRecording(false);
+			const fallbackDuration = typeof initialDurationMs === "number" && Number.isFinite(initialDurationMs)
+				? Math.max(0, Math.round(initialDurationMs))
+				: 0;
+			if (fallbackDuration > 0) {
+				setRecordingTime(fallbackDuration);
+			}
 			let cancelled = false;
 			void (async () => {
 				const durationMs = await getBlobDurationMs(initialBlob);
-				if (!cancelled && durationMs > 0) {
-					setRecordingTime(durationMs);
+				if (!cancelled) {
+					setRecordingTime((prev) => Math.max(prev, durationMs, fallbackDuration));
 				}
 			})();
 			return () => {
 				cancelled = true;
 			};
 		}
-	}, [isOpen, initialBlob]);
+	}, [isOpen, initialBlob, initialDurationMs]);
 
 	useEffect(() => {
 		if (isOpen) {
@@ -400,8 +405,8 @@ export function SystemAudioRecorder({
 			const micGain = ctx.createGain();
 
 			// Set initial volumes
-			systemGain.gain.value = systemVolume / 100;
-			micGain.gain.value = micVolume / 100;
+			systemGain.gain.value = clampGain((systemVolume / 100) * SYSTEM_MIX_MULTIPLIER);
+			micGain.gain.value = clampGain((micVolume / 100) * MIC_MIX_MULTIPLIER);
 
 			// Store gain nodes for real-time control
 			setSystemGainNode(systemGain);
@@ -409,12 +414,19 @@ export function SystemAudioRecorder({
 
 			// Create destination for mixed output
 			const destination = ctx.createMediaStreamDestination();
+			const masterCompressor = ctx.createDynamicsCompressor();
+			masterCompressor.threshold.value = -16;
+			masterCompressor.knee.value = 20;
+			masterCompressor.ratio.value = 3;
+			masterCompressor.attack.value = 0.003;
+			masterCompressor.release.value = 0.25;
 
 			// Connect: sources → gains → destination
 			systemSource.connect(systemGain);
 			micSource.connect(micGain);
-			systemGain.connect(destination);
-			micGain.connect(destination);
+			systemGain.connect(masterCompressor);
+			micGain.connect(masterCompressor);
+			masterCompressor.connect(destination);
 
 			return destination.stream;
 		} catch (error) {
@@ -430,21 +442,6 @@ export function SystemAudioRecorder({
 
 	// Start recording
 	const startRecording = async () => {
-		if (desktopBridge?.isDesktop && typeof desktopBridge.openFloatingRecorder === "function") {
-			desktopBridge.openFloatingRecorder();
-			setPermissionDenied(false);
-			setCompatibilityError(null);
-			setLiveTranscript("");
-			setRealtimeStatus("idle");
-			setRealtimeError("");
-			setIsRecording(false);
-			setRecordedBlob(null);
-			setTitle("");
-			setRecordingTime(0);
-			onClose();
-			return;
-		}
-
 		try {
 			setPermissionDenied(false);
 
@@ -504,15 +501,65 @@ export function SystemAudioRecorder({
 			// Step 2: Request microphone
 			let mStream: MediaStream | null = null;
 			try {
-				mStream = await navigator.mediaDevices.getUserMedia({
-					audio: {
-						deviceId: selectedDevice ? { exact: selectedDevice } : undefined,
-						// @ts-expect-error - Chrome/Edge support "remote-only" for echo cancellation
-						echoCancellation: "remote-only",  // Only cancel remote echo, allow mic during local playback
-						noiseSuppression: true,   // Remove background noise
-						autoGainControl: autoGainControl,    // Normalize volume levels (user configurable)
+				const preferredDeviceConstraint = selectedDevice ? { exact: selectedDevice } : undefined;
+				const micConstraintCandidates: Array<{
+					label: string;
+					constraints: MediaTrackConstraints;
+				}> = [
+					{
+						label: "selected-device-clean",
+						constraints: {
+							deviceId: preferredDeviceConstraint,
+							echoCancellation: false,
+							noiseSuppression: false,
+							autoGainControl: autoGainControl,
+						},
 					},
-				});
+					{
+						label: "selected-device-processed",
+						constraints: {
+							deviceId: preferredDeviceConstraint,
+							echoCancellation: true,
+							noiseSuppression: true,
+							autoGainControl: autoGainControl,
+						},
+					},
+					{
+						label: "default-device-clean",
+						constraints: {
+							echoCancellation: false,
+							noiseSuppression: false,
+							autoGainControl: autoGainControl,
+						},
+					},
+				];
+
+				let lastMicError: unknown = null;
+				for (const candidate of micConstraintCandidates) {
+					try {
+						mStream = await navigator.mediaDevices.getUserMedia({
+							audio: candidate.constraints,
+						});
+						console.info("Microphone capture initialized", {
+							attempt: candidate.label,
+							settings: mStream.getAudioTracks()[0]?.getSettings(),
+						});
+						break;
+					} catch (candidateError) {
+						lastMicError = candidateError;
+						console.warn("Microphone capture attempt failed", {
+							attempt: candidate.label,
+							error: candidateError,
+						});
+					}
+				}
+
+				if (!mStream && lastMicError) {
+					throw lastMicError;
+				}
+				if (!mStream) {
+					throw new Error("Unable to initialize microphone stream");
+				}
 
 				setMicStream(mStream);
 				setMicAvailable(true);
@@ -601,7 +648,7 @@ export function SystemAudioRecorder({
 		const vol = value[0];
 		setSystemVolume(vol);
 		if (systemGainNode && isRecording) {
-			systemGainNode.gain.value = vol / 100;
+			systemGainNode.gain.value = clampGain((vol / 100) * SYSTEM_MIX_MULTIPLIER);
 		}
 	};
 
@@ -610,7 +657,7 @@ export function SystemAudioRecorder({
 		const vol = value[0];
 		setMicVolume(vol);
 		if (micGainNode && isRecording) {
-			micGainNode.gain.value = vol / 100;
+			micGainNode.gain.value = clampGain((vol / 100) * MIC_MIX_MULTIPLIER);
 		}
 	};
 
@@ -649,6 +696,7 @@ export function SystemAudioRecorder({
 			await onRecordingComplete(
 				recordedBlob,
 				title || `System Recording ${new Date().toISOString()}`,
+				"system_audio_recording",
 			);
 			// Reset state
 			setRecordedBlob(null);

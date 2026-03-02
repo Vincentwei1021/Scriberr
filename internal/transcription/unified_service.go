@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"scriberr/internal/models"
@@ -37,12 +38,15 @@ const (
 	FamilyMistralVoxtral = "mistral_voxtral"
 	DiarizeSortformer    = "nvidia_sortformer"
 	DiarizeCAMPP         = "funasr_campp"
+	DiarizeDiariZenLarge = "funasr_diarizen_large"
 	ModelFireRed         = "firered_asr"
 	ModelQwen3           = "qwen3_asr"
 	ModelCAMPP           = "campp"
 	FamilyFireRed        = "firered"
 	FamilyQwen           = "qwen"
 	OutputFormatJSON     = "json"
+	SpeakerModelCAMPP    = "iic/speech_campplus_sv_zh-cn_16k-common"
+	SpeakerModelERes2Net = "iic/speech_eres2netv2_sv_zh-cn_16k-common"
 )
 
 // UnifiedTranscriptionService provides a unified interface for all transcription and diarization models
@@ -81,6 +85,31 @@ func NewUnifiedTranscriptionService(jobRepo repository.JobRepository, tempDir, o
 // SetBroadcaster sets the SSE broadcaster for the service
 func (u *UnifiedTranscriptionService) SetBroadcaster(b *sse.Broadcaster) {
 	u.broadcaster = b
+}
+
+func (u *UnifiedTranscriptionService) broadcastJobUpdate(jobID string, status models.JobStatus, progress int, stage string, stageProgress *int, errorMsg string) {
+	if u.broadcaster == nil {
+		return
+	}
+
+	payload := map[string]interface{}{
+		"job_id": jobID,
+		"status": status,
+	}
+	if progress >= 0 {
+		payload["progress"] = progress
+	}
+	if stage != "" {
+		payload["stage"] = stage
+	}
+	if stageProgress != nil {
+		payload["stage_progress"] = *stageProgress
+	}
+	if errorMsg != "" {
+		payload["error"] = errorMsg
+	}
+
+	u.broadcaster.Broadcast(jobID, "job_update", payload)
 }
 
 // Initialize prepares all registered models for use
@@ -131,12 +160,7 @@ func (u *UnifiedTranscriptionService) ProcessJob(ctx context.Context, jobID stri
 	}
 
 	// Broadcast initial processing status
-	if u.broadcaster != nil {
-		u.broadcaster.Broadcast(jobID, "job_update", map[string]interface{}{
-			"job_id": jobID,
-			"status": models.StatusProcessing,
-		})
-	}
+	u.broadcastJobUpdate(jobID, models.StatusProcessing, 5, "starting", nil, "")
 
 	// Helper function to update execution status
 	updateExecutionStatus := func(status models.JobStatus, errorMsg string) {
@@ -151,14 +175,16 @@ func (u *UnifiedTranscriptionService) ProcessJob(ctx context.Context, jobID stri
 
 		_ = u.jobRepo.UpdateExecution(ctx, execution)
 
-		// Broadcast update via SSE
-		if u.broadcaster != nil {
-			u.broadcaster.Broadcast(jobID, "job_update", map[string]interface{}{
-				"job_id": jobID,
-				"status": status,
-				"error":  errorMsg,
-			})
+		progress := -1
+		stage := ""
+		switch status {
+		case models.StatusCompleted:
+			progress = 100
+			stage = "completed"
+		case models.StatusFailed:
+			stage = "failed"
 		}
+		u.broadcastJobUpdate(jobID, status, progress, stage, nil, errorMsg)
 
 		// Trigger webhook if callback URL is present
 		if job.Parameters.CallbackURL != nil && *job.Parameters.CallbackURL != "" {
@@ -218,6 +244,70 @@ func (u *UnifiedTranscriptionService) ProcessJob(ctx context.Context, jobID stri
 //nolint:gocyclo // Orchestrator function with multiple steps
 func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context, job *models.TranscriptionJob) error {
 	logger.Info("Processing single-track job", "job_id", job.ID, "model_family", job.Parameters.ModelFamily)
+	emitProgress := func(progress int, stage string) {
+		u.broadcastJobUpdate(job.ID, models.StatusProcessing, progress, stage, nil, "")
+	}
+	emitProgressWithStage := func(progress int, stage string, stageProgress *int) {
+		u.broadcastJobUpdate(job.ID, models.StatusProcessing, progress, stage, stageProgress, "")
+	}
+	intPtr := func(v int) *int {
+		value := v
+		return &value
+	}
+	startEstimatedStageProgress := func(stage string, globalStart int, globalEnd int, estimate time.Duration, finalizingStage string) func() {
+		if estimate <= 0 {
+			return func() {}
+		}
+
+		stopCh := make(chan struct{})
+		var once sync.Once
+		startAt := time.Now()
+		lastStagePercent := -1
+		finalizingEmitted := false
+		ticker := time.NewTicker(1 * time.Second)
+
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopCh:
+					return
+				case <-ticker.C:
+					elapsed := time.Since(startAt)
+					if elapsed > estimate {
+						if finalizingStage != "" && !finalizingEmitted {
+							finalizingEmitted = true
+							globalProgress := globalStart + ((globalEnd-globalStart)*95)/100
+							emitProgress(globalProgress, finalizingStage)
+						}
+						if finalizingStage != "" {
+							continue
+						}
+					}
+
+					stagePercent := int((elapsed * 95) / estimate)
+					if stagePercent < 1 {
+						stagePercent = 1
+					}
+					if stagePercent > 95 {
+						stagePercent = 95
+					}
+					if stagePercent == lastStagePercent && !finalizingEmitted {
+						continue
+					}
+					lastStagePercent = stagePercent
+					globalProgress := globalStart + ((globalEnd-globalStart)*stagePercent)/100
+					emitProgressWithStage(globalProgress, stage, intPtr(stagePercent))
+				}
+			}
+		}()
+
+		return func() {
+			once.Do(func() {
+				close(stopCh)
+			})
+		}
+	}
 
 	// Create processing context
 	procCtx := interfaces.ProcessingContext{
@@ -261,6 +351,7 @@ func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context,
 	}
 
 	// Apply preprocessing
+	emitProgress(12, "preprocessing")
 	preprocessedInput, err = u.pipeline.ProcessAudio(ctx, audioInput, capabilities)
 	if err != nil {
 		logger.Warn("Audio preprocessing failed, using original", "error", err)
@@ -300,14 +391,26 @@ func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context,
 		if err != nil {
 			return fmt.Errorf("failed to get transcription adapter: %w", err)
 		}
+		emitProgress(22, "initializing_asr")
+		emitProgressWithStage(28, "transcribing", intPtr(0))
+		stopTranscribingProgress := startEstimatedStageProgress(
+			"transcribing",
+			28,
+			72,
+			transcriptionAdapter.GetEstimatedProcessingTime(preprocessedInput),
+			"finalizing_transcription",
+		)
 
 		// Convert parameters for this specific model
 		params := u.convertParametersForModel(job.Parameters, transcriptionModelID)
 
 		transcriptResult, err = transcriptionAdapter.Transcribe(ctx, preprocessedInput, params, procCtx)
+		stopTranscribingProgress()
 		if err != nil {
 			return fmt.Errorf("transcription failed: %w", err)
 		}
+		emitProgressWithStage(72, "transcribing", intPtr(100))
+		emitProgress(72, "transcription_completed")
 	}
 
 	// Perform diarization if requested and not already done by transcription
@@ -321,9 +424,18 @@ func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context,
 			if err != nil {
 				return fmt.Errorf("failed to get diarization adapter: %w", err)
 			}
+			emitProgressWithStage(82, "diarizing", intPtr(0))
+			stopDiarizationProgress := startEstimatedStageProgress(
+				"diarizing",
+				82,
+				94,
+				diarizationAdapter.GetEstimatedProcessingTime(preprocessedInput),
+				"finalizing_diarization",
+			)
 
 			// Use the same preprocessed audio for diarization
 			diarizationResult, err = diarizationAdapter.Diarize(ctx, preprocessedInput, diarizationParams, procCtx)
+			stopDiarizationProgress()
 			if err != nil {
 				return fmt.Errorf("diarization failed: %w", err)
 			}
@@ -332,11 +444,14 @@ func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context,
 			if transcriptResult != nil && diarizationResult != nil {
 				transcriptResult = u.mergeDiarizationWithTranscription(transcriptResult, diarizationResult)
 			}
+			emitProgressWithStage(94, "diarizing", intPtr(100))
+			emitProgress(94, "diarization_completed")
 		}
 	}
 
 	// Save results to database
 	if transcriptResult != nil {
+		emitProgress(98, "saving")
 		if err := u.saveTranscriptionResults(job.ID, transcriptResult); err != nil {
 			return fmt.Errorf("failed to save transcription results: %w", err)
 		}
@@ -409,6 +524,8 @@ func (u *UnifiedTranscriptionService) selectModels(params models.WhisperXParams)
 		case ModelPyannote, ModelDiarization31:
 			diarizationModelID = ModelPyannote
 		case DiarizeCAMPP:
+			diarizationModelID = ModelCAMPP
+		case DiarizeDiariZenLarge:
 			diarizationModelID = ModelCAMPP
 		default:
 			diarizationModelID = ModelPyannote // Default fallback
@@ -637,11 +754,14 @@ func (u *UnifiedTranscriptionService) convertToFireRedParams(params models.Whisp
 		beamSize = 3
 	}
 
+	modelVariant := resolveFireRedModelVariant(params.Model)
+
 	paramMap := map[string]interface{}{
 		"beam_size":          beamSize,
-		"timestamps":         false,
+		"timestamps":         true,
 		"use_punc":           true,
 		"auto_convert_audio": true,
+		"model_variant":      modelVariant,
 	}
 
 	if params.Language != nil && *params.Language != "" {
@@ -649,6 +769,17 @@ func (u *UnifiedTranscriptionService) convertToFireRedParams(params models.Whisp
 	}
 
 	return paramMap
+}
+
+func resolveFireRedModelVariant(model string) string {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if normalized == "" {
+		return "aed"
+	}
+	if strings.Contains(normalized, "llm") || strings.Contains(normalized, "8b") {
+		return "llm8b"
+	}
+	return "aed"
 }
 
 func normalizeQwenModelName(model string) string {
@@ -821,6 +952,13 @@ func (u *UnifiedTranscriptionService) convertToCAMPPParams(params models.Whisper
 	paramMap := map[string]interface{}{
 		"output_format":      OutputFormatJSON,
 		"auto_convert_audio": true,
+		"diarize_model":      params.DiarizeModel,
+	}
+
+	if params.SpeakerEmbeddings {
+		paramMap["speaker_model"] = SpeakerModelERes2Net
+	} else {
+		paramMap["speaker_model"] = SpeakerModelCAMPP
 	}
 
 	if params.MinSpeakers != nil {
@@ -920,6 +1058,24 @@ func (u *UnifiedTranscriptionService) mergeDiarizationWithTranscription(transcri
 	mergedTranscript.Segments = make([]interfaces.TranscriptSegment, len(transcript.Segments))
 	copy(mergedTranscript.Segments, transcript.Segments)
 
+	if len(diarization.Segments) == 0 {
+		// Keep speaker-aware UI functional even when diarization returns no segments.
+		defaultSpeaker := "SPEAKER_00"
+		for i := range mergedTranscript.Segments {
+			mergedTranscript.Segments[i].Speaker = &defaultSpeaker
+		}
+		if len(transcript.WordSegments) > 0 {
+			mergedTranscript.WordSegments = make([]interfaces.TranscriptWord, len(transcript.WordSegments))
+			copy(mergedTranscript.WordSegments, transcript.WordSegments)
+			for i := range mergedTranscript.WordSegments {
+				mergedTranscript.WordSegments[i].Speaker = &defaultSpeaker
+			}
+		}
+		logger.Warn("Diarization returned no segments; applied default single-speaker labels",
+			"transcript_segments", len(mergedTranscript.Segments))
+		return &mergedTranscript
+	}
+
 	// Assign speakers to transcript segments based on timing overlap
 	for i := range mergedTranscript.Segments {
 		segment := &mergedTranscript.Segments[i]
@@ -959,6 +1115,29 @@ func (u *UnifiedTranscriptionService) findBestSpeakerForSegment(start, end float
 
 		if overlap > maxOverlap {
 			maxOverlap = overlap
+			bestSpeaker = diarSeg.Speaker
+		}
+	}
+
+	if bestSpeaker != "" {
+		return bestSpeaker
+	}
+
+	// Fallback: if no overlap exists, choose the nearest diarization segment by midpoint distance.
+	// This improves robustness when ASR segment boundaries and diarization boundaries are slightly misaligned.
+	if len(diarizationSegments) == 0 {
+		return ""
+	}
+	segmentMid := (start + end) / 2.0
+	closestDistance := 1e12
+	for _, diarSeg := range diarizationSegments {
+		diarMid := (diarSeg.Start + diarSeg.End) / 2.0
+		distance := diarMid - segmentMid
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance < closestDistance {
+			closestDistance = distance
 			bestSpeaker = diarSeg.Speaker
 		}
 	}
