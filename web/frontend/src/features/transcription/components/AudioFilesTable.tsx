@@ -40,6 +40,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/features/auth/hooks/useAuth";
 import { useAudioListInfinite, type AudioFile } from "@/features/transcription/hooks/useAudioFiles";
 import { useTranscriptionEvents } from "@/features/transcription/hooks/useTranscriptionEvents";
+import { clampPercent, formatStageLabel, formatStageWithProgress, stageSupportsNumericProgress } from "@/features/transcription/utils/progressStage";
 import { SendToOpenClawDialog } from "./audio-detail/SendToOpenClawDialog";
 import { useTranscript } from "@/features/transcription/hooks/useAudioDetail";
 import SpeakerRenameDialog from "./audio-detail/SpeakerRenameDialog";
@@ -647,6 +648,17 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 	const getStatusIcon = useCallback((file: AudioFile) => {
 		const status = file.status;
 		const progress = trackProgress[file.id];
+		const hasSingleTrackProgress = typeof file.transcription_progress === "number";
+		const singleTrackProgress = Math.max(0, Math.min(99, Math.round(file.transcription_progress ?? 0)));
+		const stageLabel = formatStageLabel(file.transcription_stage);
+		const stageTooltip = formatStageWithProgress(file.transcription_stage, file.transcription_stage_progress);
+		const stagePercent = stageSupportsNumericProgress(file.transcription_stage) && typeof file.transcription_stage_progress === "number"
+			? clampPercent(file.transcription_stage_progress)
+			: undefined;
+		const fallbackPercent = !file.transcription_stage && hasSingleTrackProgress
+			? singleTrackProgress
+			: undefined;
+		const progressPercent = stagePercent ?? fallbackPercent;
 
 		// Multi-track processing
 		if (file.is_multi_track && status === "processing" && progress) {
@@ -702,6 +714,22 @@ export const AudioFilesTable = memo(function AudioFilesTable({
 					</Tooltip>
 				);
 			case "processing":
+				if (!file.is_multi_track && (hasSingleTrackProgress || file.transcription_stage)) {
+					return (
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<div className="flex items-center gap-1.5 cursor-help text-amber-500 max-w-[170px]">
+									<Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.5} />
+									<span className="text-[10px] font-medium text-amber-700 truncate">{stageLabel}</span>
+									{typeof progressPercent === "number" && (
+										<span className="text-xs font-medium tabular-nums">{progressPercent}%</span>
+									)}
+								</div>
+							</TooltipTrigger>
+							<TooltipContent>{stageTooltip}</TooltipContent>
+						</Tooltip>
+					);
+				}
 				return (
 					<Tooltip>
 						<TooltipTrigger asChild>

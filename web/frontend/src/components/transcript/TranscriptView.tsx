@@ -249,6 +249,34 @@ export const TranscriptView = forwardRef<HTMLDivElement, TranscriptViewProps>(({
 
     // Render transcript with word-level highlighting for compact view
     const renderCompactView = () => {
+        const hasSpeakerSegments = Boolean(
+            transcript.segments &&
+            transcript.segments.length > 0 &&
+            transcript.segments.some((segment) => Boolean(segment.speaker))
+        );
+
+        // When speaker labels are available, prioritize speaker-aware rendering.
+        // This avoids hiding speakers in compact mode when word-level timestamps exist.
+        if (hasSpeakerSegments && transcript.segments) {
+            return (
+                <div className="space-y-3">
+                    {transcript.segments.map((segment, index) => (
+                        <p
+                            key={`compact-speaker-segment-${index}`}
+                            className="text-lg leading-relaxed text-carbon-700 dark:text-carbon-300 whitespace-pre-wrap"
+                        >
+                            {segment.speaker && (
+                                <span className="font-semibold text-carbon-800 dark:text-carbon-100 mr-2">
+                                    {getDisplaySpeakerName(segment.speaker)}:
+                                </span>
+                            )}
+                            {segment.text}
+                        </p>
+                    ))}
+                </div>
+            );
+        }
+
         if (!transcript.word_segments || transcript.word_segments.length === 0) {
             if (transcript.segments && transcript.segments.length > 0) {
                 return (

@@ -28,6 +28,8 @@ type Message struct {
 	Event Event
 }
 
+const clientChannelBufferSize = 32
+
 // Broadcaster manages SSE connections and broadcasting
 type Broadcaster struct {
 	subscribers map[string]map[chan Event]bool // JobID -> Set of Clients
@@ -82,11 +84,22 @@ func (b *Broadcaster) listen() {
 			// Send only to subscribers of this job
 			if clients, ok := b.subscribers[msg.JobID]; ok {
 				for s := range clients {
-					// Send non-blocking
+					// Non-blocking send with backpressure strategy:
+					// if channel is full, drop one stale message and try to enqueue latest.
 					select {
 					case s <- msg.Event:
 					default:
-						logger.Warn("Skipping slow SSE client", "job_id", msg.JobID)
+						select {
+						case <-s:
+						default:
+						}
+						select {
+						case s <- msg.Event:
+						default:
+							logger.Warn("Dropping SSE event for saturated client",
+								"job_id", msg.JobID,
+								"event_type", msg.Event.Type)
+						}
 					}
 				}
 			}
@@ -134,7 +147,7 @@ func (b *Broadcaster) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a channel for this client
-	messageChan := make(chan Event)
+	messageChan := make(chan Event, clientChannelBufferSize)
 	subscription := Subscription{JobID: jobID, Channel: messageChan}
 
 	// Register subscription

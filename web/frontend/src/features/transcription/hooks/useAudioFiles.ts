@@ -1,10 +1,13 @@
-import { useQuery, useMutation, useQueryClient, keepPreviousData, useInfiniteQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData, useInfiniteQuery, type QueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 
 export interface AudioFile {
     id: string;
     title?: string;
     status: "uploaded" | "pending" | "processing" | "completed" | "failed";
+    transcription_progress?: number;
+    transcription_stage?: string;
+    transcription_stage_progress?: number;
     openclaw_sent_at?: string | null;
     openclaw_profile_name?: string | null;
     created_at: string;
@@ -36,8 +39,75 @@ interface AudioListParams {
     sortOrder?: 'asc' | 'desc';
 }
 
+type ProgressFields = Pick<AudioFile, 'transcription_progress' | 'transcription_stage' | 'transcription_stage_progress'>;
+
+const hasProgressData = (job: ProgressFields): boolean =>
+    typeof job.transcription_progress === 'number' ||
+    typeof job.transcription_stage === 'string' ||
+    typeof job.transcription_stage_progress === 'number';
+
+const addProgressFromJobs = (target: Map<string, ProgressFields>, jobs: AudioFile[]) => {
+    for (const job of jobs) {
+        if (hasProgressData(job)) {
+            target.set(job.id, {
+                transcription_progress: job.transcription_progress,
+                transcription_stage: job.transcription_stage,
+                transcription_stage_progress: job.transcription_stage_progress,
+            });
+        }
+    }
+};
+
+const collectCachedProgress = (queryClient: QueryClient): Map<string, ProgressFields> => {
+    const progressById = new Map<string, ProgressFields>();
+    const listCaches = queryClient.getQueriesData({ queryKey: ['audioFiles'] });
+
+    for (const [, data] of listCaches) {
+        if (!data || typeof data !== 'object') continue;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const listData = data as any;
+
+        if (Array.isArray(listData.pages)) {
+            for (const cachedPage of listData.pages) {
+                if (Array.isArray(cachedPage?.jobs)) {
+                    addProgressFromJobs(progressById, cachedPage.jobs);
+                }
+            }
+        }
+
+        if (Array.isArray(listData.jobs)) {
+            addProgressFromJobs(progressById, listData.jobs);
+        }
+    }
+
+    return progressById;
+};
+
+const mergeProgressIntoJobs = (jobs: AudioFile[], progressById: Map<string, ProgressFields>): AudioFile[] =>
+    jobs.map((job) => {
+        const cached = progressById.get(job.id);
+        if (!cached) return job;
+
+        const isActive = job.status === 'processing' || job.status === 'pending';
+        if (!isActive) return job;
+
+        return {
+            ...job,
+            transcription_progress:
+                typeof job.transcription_progress === 'number'
+                    ? job.transcription_progress
+                    : cached.transcription_progress,
+            transcription_stage: job.transcription_stage || cached.transcription_stage,
+            transcription_stage_progress:
+                typeof job.transcription_stage_progress === 'number'
+                    ? job.transcription_stage_progress
+                    : cached.transcription_stage_progress,
+        };
+    });
+
 export function useAudioList(params: AudioListParams) {
     const { getAuthHeaders } = useAuth();
+    const queryClient = useQueryClient();
 
     return useQuery({
         queryKey: ['audioFiles', params],
@@ -61,7 +131,12 @@ export function useAudioList(params: AudioListParams) {
                 throw new Error('Failed to fetch audio files');
             }
 
-            return response.json() as Promise<AudioFilesResponse>;
+            const data = await response.json() as AudioFilesResponse;
+            const progressById = collectCachedProgress(queryClient);
+            return {
+                ...data,
+                jobs: mergeProgressIntoJobs(data.jobs, progressById),
+            };
         },
         placeholderData: keepPreviousData,
         refetchInterval: false
@@ -70,6 +145,7 @@ export function useAudioList(params: AudioListParams) {
 
 export function useAudioListInfinite(params: Omit<AudioListParams, 'page'>) {
     const { getAuthHeaders } = useAuth();
+    const queryClient = useQueryClient();
 
     return useInfiniteQuery({
         queryKey: ['audioFiles', 'infinite', params],
@@ -93,7 +169,12 @@ export function useAudioListInfinite(params: Omit<AudioListParams, 'page'>) {
                 throw new Error('Failed to fetch audio files');
             }
 
-            return response.json() as Promise<AudioFilesResponse>;
+            const data = await response.json() as AudioFilesResponse;
+            const progressById = collectCachedProgress(queryClient);
+            return {
+                ...data,
+                jobs: mergeProgressIntoJobs(data.jobs, progressById),
+            };
         },
         getNextPageParam: (lastPage) => {
             if (lastPage.pagination.page < lastPage.pagination.pages) {
@@ -111,13 +192,16 @@ export function useAudioUpload() {
     const queryClient = useQueryClient();
 
     return useMutation({
-        mutationFn: async ({ file, isVideo }: { file: File, isVideo: boolean }) => {
+        mutationFn: async ({ file, isVideo, source }: { file: File, isVideo: boolean, source?: string }) => {
             const formData = new FormData();
             const fieldName = isVideo ? 'video' : 'audio';
             const endpoint = isVideo ? '/api/v1/transcription/upload-video' : '/api/v1/transcription/upload';
 
             formData.append(fieldName, file);
             formData.append('title', file.name.replace(/\.[^/.]+$/, ''));
+            if (source) {
+                formData.append('source', source);
+            }
 
             const response = await fetch(endpoint, {
                 method: 'POST',

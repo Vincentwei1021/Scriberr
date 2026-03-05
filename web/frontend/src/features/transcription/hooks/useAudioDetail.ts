@@ -52,6 +52,9 @@ export interface AudioFile {
     id: string;
     title?: string;
     status: "uploaded" | "pending" | "processing" | "completed" | "failed";
+    transcription_progress?: number;
+    transcription_stage?: string;
+    transcription_stage_progress?: number;
     openclaw_sent_at?: string | null;
     openclaw_profile_name?: string | null;
     created_at: string;
@@ -90,8 +93,81 @@ export interface Transcript {
     word_segments?: WordSegment[];
 }
 
+type ProgressFields = Pick<AudioFile, "transcription_progress" | "transcription_stage" | "transcription_stage_progress">;
+
+const hasProgressData = (audio: ProgressFields): boolean =>
+    typeof audio.transcription_progress === "number" ||
+    typeof audio.transcription_stage === "string" ||
+    typeof audio.transcription_stage_progress === "number";
+
+const mergeProgressIfMissing = (incoming: AudioFile, cached: ProgressFields | null): AudioFile => {
+    if (!cached || !hasProgressData(cached)) return incoming;
+
+    const isActive = incoming.status === "processing" || incoming.status === "pending";
+    if (!isActive) return incoming;
+
+    return {
+        ...incoming,
+        transcription_progress:
+            typeof incoming.transcription_progress === "number"
+                ? incoming.transcription_progress
+                : cached.transcription_progress,
+        transcription_stage: incoming.transcription_stage || cached.transcription_stage,
+        transcription_stage_progress:
+            typeof incoming.transcription_stage_progress === "number"
+                ? incoming.transcription_stage_progress
+                : cached.transcription_stage_progress,
+    };
+};
+
+const findCachedProgress = (queryClient: ReturnType<typeof useQueryClient>, audioId: string): ProgressFields | null => {
+    const detailCache = queryClient.getQueryData<AudioFile>(["audio", audioId]);
+    if (detailCache && hasProgressData(detailCache)) {
+        return {
+            transcription_progress: detailCache.transcription_progress,
+            transcription_stage: detailCache.transcription_stage,
+            transcription_stage_progress: detailCache.transcription_stage_progress,
+        };
+    }
+
+    const listCaches = queryClient.getQueriesData({ queryKey: ["audioFiles"] });
+    for (const [, data] of listCaches) {
+        if (!data || typeof data !== "object") continue;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const listData = data as any;
+
+        if (Array.isArray(listData.pages)) {
+            for (const page of listData.pages) {
+                const job = page?.jobs?.find((item: AudioFile) => item.id === audioId);
+                if (job && hasProgressData(job)) {
+                    return {
+                        transcription_progress: job.transcription_progress,
+                        transcription_stage: job.transcription_stage,
+                        transcription_stage_progress: job.transcription_stage_progress,
+                    };
+                }
+            }
+        }
+
+        if (Array.isArray(listData.jobs)) {
+            const job = listData.jobs.find((item: AudioFile) => item.id === audioId);
+            if (job && hasProgressData(job)) {
+                return {
+                    transcription_progress: job.transcription_progress,
+                    transcription_stage: job.transcription_stage,
+                    transcription_stage_progress: job.transcription_stage_progress,
+                };
+            }
+        }
+    }
+
+    return null;
+};
+
 export function useAudioDetail(audioId: string) {
     const { getAuthHeaders } = useAuth();
+    const queryClient = useQueryClient();
 
     return useQuery({
         queryKey: ["audio", audioId],
@@ -100,7 +176,8 @@ export function useAudioDetail(audioId: string) {
                 headers: getAuthHeaders(),
             });
             if (!response.ok) throw new Error("Failed to fetch audio details");
-            return response.json() as Promise<AudioFile>;
+            const data = await response.json() as AudioFile;
+            return mergeProgressIfMissing(data, findCachedProgress(queryClient, audioId));
         },
         // Poll while processing or pending
         refetchInterval: (query) => {

@@ -20,6 +20,8 @@ import { WandAdvancedIcon } from "@/components/icons/WandAdvancedIcon";
 import { useAudioDetail, useUpdateTitle, useTranscript, type TranscriptSegment } from "@/features/transcription/hooks/useAudioDetail";
 import { useSpeakerMappings } from "@/features/transcription/hooks/useTranscriptionSpeakers";
 import { useTranscriptDownload } from "@/features/transcription/hooks/useTranscriptDownload";
+import { useTranscriptionEvents } from "@/features/transcription/hooks/useTranscriptionEvents";
+import { clampPercent, formatStageLabel, formatStageWithProgress, stageSupportsNumericProgress } from "@/features/transcription/utils/progressStage";
 
 // Sub-components
 import { TranscriptSection } from "./audio-detail/TranscriptSection";
@@ -71,6 +73,7 @@ export const AudioDetailView = function AudioDetailView({ audioId: propAudioId }
 
     // Data Fetching
     const { data: audioFile, isLoading, error } = useAudioDetail(audioId || "");
+    useTranscriptionEvents(audioId || null);
     const { mutate: updateTitle } = useUpdateTitle(audioId || "");
     // Fetch transcript & speakers here to support menu actions
     const { data: transcript } = useTranscript(audioId || "", true);
@@ -238,6 +241,12 @@ export const AudioDetailView = function AudioDetailView({ audioId: propAudioId }
         day: "numeric",
         year: "numeric"
     }).toUpperCase();
+    const stageLabel = formatStageLabel(audioFile.transcription_stage);
+    const stageTooltip = formatStageWithProgress(audioFile.transcription_stage, audioFile.transcription_stage_progress);
+    const stagePercent = stageSupportsNumericProgress(audioFile.transcription_stage) &&
+        typeof audioFile.transcription_stage_progress === "number"
+        ? clampPercent(audioFile.transcription_stage_progress)
+        : undefined;
 
     return (
         <div className="h-screen flex flex-col bg-[var(--bg-main)] relative selection:bg-[var(--brand-light)] overflow-hidden">
@@ -302,11 +311,19 @@ export const AudioDetailView = function AudioDetailView({ audioId: propAudioId }
                                                     {audioFile.status === 'processing' && (
                                                         <Tooltip>
                                                             <TooltipTrigger asChild>
-                                                                <div className="cursor-help text-amber-500">
+                                                                <div className="cursor-help text-amber-500 flex items-center gap-1 max-w-[220px]">
                                                                     <Loader2 className="h-5 w-5 animate-spin" strokeWidth={2.5} />
+                                                                    <span className="text-[10px] font-semibold text-amber-700 truncate">
+                                                                        {stageLabel}
+                                                                    </span>
+                                                                    {typeof stagePercent === "number" && (
+                                                                        <span className="text-[10px] font-semibold tabular-nums text-amber-600">
+                                                                            {stagePercent}%
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                             </TooltipTrigger>
-                                                            <TooltipContent>Processing</TooltipContent>
+                                                            <TooltipContent>{stageTooltip}</TooltipContent>
                                                         </Tooltip>
                                                     )}
                                                     {audioFile.status === 'failed' && (
