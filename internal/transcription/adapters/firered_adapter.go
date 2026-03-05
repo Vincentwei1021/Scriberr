@@ -22,13 +22,20 @@ var fireredScripts embed.FS
 // FireRedAdapter implements the TranscriptionAdapter interface for FireRedASR2-AED
 type FireRedAdapter struct {
 	*BaseAdapter
-	envPath   string
-	modelDir  string
-	sourceDir string
+	envPath      string
+	modelDir     string
+	sourceDir    string
+	modelDirLLM  string
+	sourceDirLLM string
 }
 
 // NewFireRedAdapter creates a new FireRedASR2-AED adapter
 func NewFireRedAdapter(envPath, modelDir string) *FireRedAdapter {
+	modelDirLLM := strings.TrimSpace(os.Getenv("FIRERED_MODEL_DIR_LLM"))
+	if modelDirLLM == "" {
+		modelDirLLM = "/app/models/FireRedASR2-LLM"
+	}
+
 	capabilities := interfaces.ModelCapabilities{
 		ModelID:            "firered_asr",
 		ModelFamily:        "firered",
@@ -93,10 +100,12 @@ func NewFireRedAdapter(envPath, modelDir string) *FireRedAdapter {
 	baseAdapter := NewBaseAdapter("firered_asr", envPath, capabilities, schema)
 
 	return &FireRedAdapter{
-		BaseAdapter: baseAdapter,
-		envPath:     envPath,
-		modelDir:    modelDir,
-		sourceDir:   resolveFireRedSourceDir(modelDir),
+		BaseAdapter:  baseAdapter,
+		envPath:      envPath,
+		modelDir:     modelDir,
+		sourceDir:    resolveFireRedSourceDir(modelDir),
+		modelDirLLM:  modelDirLLM,
+		sourceDirLLM: resolveFireRedSourceDir(modelDirLLM),
 	}
 }
 
@@ -126,7 +135,7 @@ func (f *FireRedAdapter) PrepareEnvironment(ctx context.Context) error {
 		return fmt.Errorf("failed to copy embedded scripts: %w", err)
 	}
 
-	if CheckEnvironmentReady(f.envPath, "from fireredasr2s.fireredasr2 import FireRedAsr2") {
+	if CheckEnvironmentReady(f.envPath, "from fireredasr2s.fireredasr2 import FireRedAsr2; import peft, transformers; assert transformers.__version__.startswith('4.51.')") {
 		logger.Info("FireRedASR2 environment already ready")
 		f.initialized = true
 		return nil
@@ -283,17 +292,19 @@ func (f *FireRedAdapter) Transcribe(ctx context.Context, input interfaces.AudioI
 
 func (f *FireRedAdapter) buildFireRedArgs(input interfaces.AudioInput, params map[string]interface{}, tempDir string) ([]string, error) {
 	outputFile := filepath.Join(tempDir, "result.json")
+	modelDir, sourceDir, modelType := f.resolveModelSelection(params)
 
 	scriptPath := filepath.Join(f.envPath, "firered_transcribe.py")
 	args := []string{
 		"run", "--native-tls", "--project", f.envPath, "python", scriptPath,
 		input.FilePath,
 		"--output", outputFile,
-		"--model-dir", f.modelDir,
+		"--model-dir", modelDir,
+		"--model-type", modelType,
 	}
 
-	if f.sourceDir != "" {
-		args = append(args, "--source-dir", f.sourceDir)
+	if sourceDir != "" {
+		args = append(args, "--source-dir", sourceDir)
 	}
 
 	beamSize := f.GetIntParameter(params, "beam_size")
@@ -306,7 +317,7 @@ func (f *FireRedAdapter) buildFireRedArgs(input interfaces.AudioInput, params ma
 	}
 
 	if f.GetBoolParameter(params, "use_punc") {
-		puncDir := filepath.Join(filepath.Dir(f.modelDir), "FireRedPunc")
+		puncDir := filepath.Join(filepath.Dir(modelDir), "FireRedPunc")
 		if _, err := os.Stat(puncDir); err == nil {
 			args = append(args, "--punc-model-dir", puncDir)
 		}
@@ -315,13 +326,41 @@ func (f *FireRedAdapter) buildFireRedArgs(input interfaces.AudioInput, params ma
 	}
 
 	// Use FireRed's non-stream VAD model for long-audio segmentation to avoid OOM.
-	vadDir := filepath.Join(filepath.Dir(f.modelDir), "FireRedVAD", "VAD")
+	vadDir := filepath.Join(filepath.Dir(modelDir), "FireRedVAD", "VAD")
 	if _, err := os.Stat(vadDir); err == nil {
 		args = append(args, "--vad-model-dir", vadDir)
 	}
 	args = append(args, "--max-segment-seconds", "18")
 
 	return args, nil
+}
+
+func (f *FireRedAdapter) resolveModelSelection(params map[string]interface{}) (modelDir string, sourceDir string, modelType string) {
+	modelDir = f.modelDir
+	sourceDir = f.sourceDir
+	modelType = "aed"
+
+	variant := strings.ToLower(strings.TrimSpace(f.GetStringParameter(params, "model_variant")))
+	if variant != "llm8b" {
+		return modelDir, sourceDir, modelType
+	}
+
+	modelType = "llm"
+	if f.modelDirLLM == "" {
+		logger.Warn("FireRed LLM model dir is empty, fallback to AED model")
+		modelType = "aed"
+		return modelDir, sourceDir, modelType
+	}
+
+	if _, err := os.Stat(f.modelDirLLM); err != nil {
+		logger.Warn("FireRed LLM model dir not found, fallback to AED model", "path", f.modelDirLLM, "error", err)
+		modelType = "aed"
+		return modelDir, sourceDir, modelType
+	}
+
+	modelDir = f.modelDirLLM
+	sourceDir = f.sourceDirLLM
+	return modelDir, sourceDir, modelType
 }
 
 func (f *FireRedAdapter) parseResult(tempDir string) (*interfaces.TranscriptResult, error) {

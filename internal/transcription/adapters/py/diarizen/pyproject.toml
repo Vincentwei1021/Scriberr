@@ -1,20 +1,22 @@
 [project]
-name = "pyannote-diarization"
+name = "diarizen-inference"
 version = "0.1.0"
-description = "Audio diarization using PyAnnote"
+description = "DiariZen inference runtime for meeting diarization"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.5.0",
-    "torchaudio>=2.5.0",
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
     "huggingface-hub>=0.28.1",
-    "pyannote.audio==4.0.2",
-    "toml"
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-mock>=3.12.0",
+    "numpy==1.26.4",
+    "scipy",
+    "soundfile",
+    "toml",
+    "accelerate==1.6.0",
+    "psutil",
+    "torchcodec",
+    "setuptools<81",
+    "diarizen @ git+https://github.com/BUTSpeechFIT/DiariZen.git",
+    "pyannote-audio @ git+https://github.com/BUTSpeechFIT/DiariZen.git#subdirectory=pyannote-audio",
 ]
 
 [tool.uv.sources]
@@ -38,3 +40,6 @@ explicit = true
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[tool.uv.extra-build-dependencies]
+pyannote-audio = ["setuptools<81"]

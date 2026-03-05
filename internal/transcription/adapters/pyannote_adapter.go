@@ -188,7 +188,7 @@ func (p *PyAnnoteAdapter) PrepareEnvironment(ctx context.Context) error {
 	}
 
 	// Check if PyAnnote is already available (using cache to speed up repeated checks)
-	if CheckEnvironmentReady(p.envPath, "from pyannote.audio import Pipeline") {
+	if CheckEnvironmentReady(p.envPath, "from pyannote.audio import Pipeline; from diarizen.pipelines.inference import DiariZenPipeline") {
 		logger.Info("PyAnnote already available in environment")
 		// Still ensure script exists
 		if err := p.copyDiarizationScript(); err != nil {

@@ -16,7 +16,7 @@ import (
 	"scriberr/pkg/logger"
 )
 
-//go:embed py/campp/*
+//go:embed py/campp/* py/diarizen/*
 var camppScripts embed.FS
 
 // CAMPPAdapter implements the DiarizationAdapter interface for FunASR CAM++
@@ -81,6 +81,14 @@ func NewCAMPPAdapter(envPath string) *CAMPPAdapter {
 			Group:       "advanced",
 		},
 		{
+			Name:        "speaker_model",
+			Type:        "string",
+			Required:    false,
+			Default:     "iic/speech_campplus_sv_zh-cn_16k-common",
+			Description: "Speaker embedding model ID (e.g. CAM++ or ERes2NetV2)",
+			Group:       "advanced",
+		},
+		{
 			Name:        "auto_convert_audio",
 			Type:        "bool",
 			Required:    false,
@@ -137,6 +145,69 @@ func (c *CAMPPAdapter) PrepareEnvironment(ctx context.Context) error {
 
 	c.initialized = true
 	logger.Info("CAM++ environment prepared successfully")
+	return nil
+}
+
+func (c *CAMPPAdapter) diarizenEnvPath() string {
+	return filepath.Join(filepath.Dir(c.envPath), "diarizen")
+}
+
+func isDiariZenLargeModel(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "funasr_diarizen_large", "diarizen", "diarizen_large", "diarizen-large":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *CAMPPAdapter) ensureDiariZenEnvironment() error {
+	envPath := c.diarizenEnvPath()
+	checkStmt := "" +
+		"import torchaudio; " +
+		"torchaudio.list_audio_backends = getattr(torchaudio, 'list_audio_backends', lambda: ['ffmpeg']); " +
+		"torchaudio.set_audio_backend = getattr(torchaudio, 'set_audio_backend', lambda backend: None); " +
+		"torchaudio.AudioMetaData = getattr(torchaudio, 'AudioMetaData', type('AudioMetaData', (), {})); " +
+		"import torchcodec; " +
+		"from diarizen.pipelines.inference import DiariZenPipeline"
+	if CheckEnvironmentReady(envPath, checkStmt) {
+		return nil
+	}
+
+	if err := os.MkdirAll(envPath, 0755); err != nil {
+		return fmt.Errorf("failed to create diarizen directory: %w", err)
+	}
+
+	pyprojectContent, err := camppScripts.ReadFile("py/diarizen/pyproject.toml")
+	if err != nil {
+		return fmt.Errorf("failed to read embedded diarizen pyproject.toml: %w", err)
+	}
+
+	contentStr := strings.Replace(
+		string(pyprojectContent),
+		"https://download.pytorch.org/whl/cu126",
+		GetPyTorchWheelURL(),
+		1,
+	)
+
+	pyprojectPath := filepath.Join(envPath, "pyproject.toml")
+	if err := os.WriteFile(pyprojectPath, []byte(contentStr), 0644); err != nil {
+		return fmt.Errorf("failed to write diarizen pyproject.toml: %w", err)
+	}
+
+	logger.Info("Installing DiariZen dependencies", "env_path", envPath)
+	cmd := exec.Command("uv", "sync", "--native-tls", "--no-build-isolation-package", "pyannote-audio")
+	cmd.Dir = envPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("diarizen uv sync failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	testCmd := exec.Command("uv", "run", "--native-tls", "--project", envPath, "python", "-c", checkStmt)
+	if out, err = testCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("diarizen environment verification failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
 	return nil
 }
 
@@ -213,6 +284,11 @@ func (c *CAMPPAdapter) Diarize(ctx context.Context, input interfaces.AudioInput,
 	if err := c.ValidateParameters(params); err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
+	if isDiariZenLargeModel(c.GetStringParameter(params, "diarize_model")) {
+		if err := c.ensureDiariZenEnvironment(); err != nil {
+			return nil, fmt.Errorf("failed to prepare DiariZen-large environment: %w", err)
+		}
+	}
 
 	// Create temporary directory
 	tempDir, err := c.CreateTempDirectory(procCtx)
@@ -287,8 +363,12 @@ func (c *CAMPPAdapter) buildCAMPPArgs(input interfaces.AudioInput, params map[st
 	}
 
 	scriptPath := filepath.Join(c.envPath, "campp_diarize.py")
+	projectPath := c.envPath
+	if isDiariZenLargeModel(c.GetStringParameter(params, "diarize_model")) {
+		projectPath = c.diarizenEnvPath()
+	}
 	args := []string{
-		"run", "--native-tls", "--project", c.envPath, "python", scriptPath,
+		"run", "--native-tls", "--project", projectPath, "python", scriptPath,
 		input.FilePath,
 		"--output", outputFile,
 	}
@@ -303,6 +383,13 @@ func (c *CAMPPAdapter) buildCAMPPArgs(input interfaces.AudioInput, params map[st
 
 	// Add output format
 	args = append(args, "--output-format", outputFormat)
+
+	if speakerModel := strings.TrimSpace(c.GetStringParameter(params, "speaker_model")); speakerModel != "" {
+		args = append(args, "--speaker-model", speakerModel)
+	}
+	if diarizeModel := strings.TrimSpace(c.GetStringParameter(params, "diarize_model")); diarizeModel != "" {
+		args = append(args, "--diarize-model", diarizeModel)
+	}
 
 	return args, nil
 }
