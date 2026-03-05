@@ -39,7 +39,8 @@ interface PendingOpenClawSend {
 interface GlobalUploadContextValue {
     // File upload
     handleFileSelect: (
-        files: File | File[] | FileWithType | FileWithType[]
+        files: File | File[] | FileWithType | FileWithType[],
+        source?: string
     ) => Promise<void>;
     // Multi-track
     handleMultiTrackUpload: (
@@ -49,7 +50,7 @@ interface GlobalUploadContextValue {
     ) => Promise<void>;
     openMultiTrackDialog: () => void;
     // Recording completion
-    handleRecordingComplete: (blob: Blob, title: string) => Promise<void>;
+    handleRecordingComplete: (blob: Blob, title: string, source?: string) => Promise<void>;
     // State
     isUploading: boolean;
     uploadProgress: UploadProgress[];
@@ -233,7 +234,7 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
     }, [pendingOpenClawSends.length, getAuthHeaders, toast]);
 
     const handleFileSelect = useCallback(
-        async (files: File | File[] | FileWithType | FileWithType[]) => {
+        async (files: File | File[] | FileWithType | FileWithType[], source?: string) => {
             // Normalize input to an array of FileWithType objects
             const fileArray = Array.isArray(files) ? files : [files];
             const processedFiles = fileArray.map((item) => {
@@ -280,7 +281,7 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
                 const isVideo = fileItem.isVideo;
 
                 try {
-                    const uploadResult = await uploadFile({ file, isVideo }) as { id?: string; title?: string };
+                    const uploadResult = await uploadFile({ file, isVideo, source }) as { id?: string; title?: string };
 
                     if (isOnDashboard) {
                         setUploadProgress((prev) =>
@@ -426,9 +427,9 @@ export function GlobalUploadProvider({ children }: PropsWithChildren) {
     }, []);
 
     const handleRecordingComplete = useCallback(
-        async (blob: Blob, title: string) => {
+        async (blob: Blob, title: string, source?: string) => {
             const file = new File([blob], `${title}.webm`, { type: blob.type });
-            await handleFileSelect(file);
+            await handleFileSelect(file, source);
         },
         [handleFileSelect]
     );

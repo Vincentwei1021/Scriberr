@@ -22,6 +22,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - FIRERED_MODEL_DIR=/app/models/FireRedASR2-AED
+      - FIRERED_MODEL_DIR_LLM=/app/models/FireRedASR2-LLM
       - FIRERED_SOURCE_DIR=/app/FireRedASR2S
       - PUID=${PUID:-10001}
       - PGID=${PGID:-10001}

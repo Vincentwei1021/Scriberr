@@ -56,6 +56,12 @@ type Handler struct {
 	broadcaster         *sse.Broadcaster
 }
 
+const (
+	uploadSourceDefault     = "upload"
+	uploadSourceSystemAudio = "system_audio_recording"
+	systemMeetingModel      = "firered-asr2-llm-8b"
+)
+
 // NewHandler creates a new handler
 func NewHandler(
 	cfg *config.Config,
@@ -304,11 +310,13 @@ func (h *Handler) UploadAudio(c *gin.Context) {
 	// Create job record
 	jobID := filepath.Base(filePath)
 	jobID = jobID[:len(jobID)-len(filepath.Ext(jobID))] // Extract ID from filename
+	inputSource := normalizeUploadSource(c.PostForm("source"))
 
 	job := models.TranscriptionJob{
-		ID:        jobID,
-		AudioPath: filePath,
-		Status:    models.StatusUploaded,
+		ID:          jobID,
+		AudioPath:   filePath,
+		InputSource: inputSource,
+		Status:      models.StatusUploaded,
 	}
 
 	if title := c.PostForm(paramTitle); title != "" {
@@ -327,39 +335,53 @@ func (h *Handler) UploadAudio(c *gin.Context) {
 		// Use UserService to get user
 		user, err := h.userService.GetUser(c.Request.Context(), userID.(uint))
 		if err == nil && user.AutoTranscriptionEnabled {
-			// Get user's default profile or use system default
-			var profile *models.TranscriptionProfile
-
-			if user.DefaultProfileID != nil {
-				profile, _ = h.profileRepo.FindByID(c.Request.Context(), *user.DefaultProfileID)
-			}
-
-			// If no user default or user default not found, try to find a system default
-			if profile == nil {
-				profile, _ = h.profileRepo.FindDefault(c.Request.Context())
-			}
-
-			// If still no profile found, use the first available profile
-			if profile == nil {
-				profiles, _, _ := h.profileRepo.List(c.Request.Context(), 0, 1)
-				if len(profiles) > 0 {
-					profile = &profiles[0]
-				}
-			}
-
-			// If we found a profile, update the job and queue it
-			if profile != nil {
-				job.Parameters = profile.Parameters
-				job.Diarization = profile.Parameters.Diarize
+			// System-audio recordings should always use the meeting pipeline.
+			if isSystemAudioJob(&job) {
+				applySystemAudioMeetingPipeline(&job.Parameters)
+				job.Diarization = job.Parameters.Diarize
 				job.Status = models.StatusPending
 
-				// Update the job in database
 				if err := h.jobRepo.Update(c.Request.Context(), &job); err == nil {
-					// Enqueue the job for transcription
 					if err := h.taskQueue.EnqueueJob(jobID); err != nil {
-						// If enqueueing fails, revert status but don't fail the upload
 						job.Status = models.StatusUploaded
 						_ = h.jobRepo.Update(c.Request.Context(), &job)
+					}
+				}
+			} else {
+				// Get user's default profile or use system default
+				var profile *models.TranscriptionProfile
+
+				if user.DefaultProfileID != nil {
+					profile, _ = h.profileRepo.FindByID(c.Request.Context(), *user.DefaultProfileID)
+				}
+
+				// If no user default or user default not found, try to find a system default
+				if profile == nil {
+					profile, _ = h.profileRepo.FindDefault(c.Request.Context())
+				}
+
+				// If still no profile found, use the first available profile
+				if profile == nil {
+					profiles, _, _ := h.profileRepo.List(c.Request.Context(), 0, 1)
+					if len(profiles) > 0 {
+						profile = &profiles[0]
+					}
+				}
+
+				// If we found a profile, update the job and queue it
+				if profile != nil {
+					job.Parameters = profile.Parameters
+					job.Diarization = profile.Parameters.Diarize
+					job.Status = models.StatusPending
+
+					// Update the job in database
+					if err := h.jobRepo.Update(c.Request.Context(), &job); err == nil {
+						// Enqueue the job for transcription
+						if err := h.taskQueue.EnqueueJob(jobID); err != nil {
+							// If enqueueing fails, revert status but don't fail the upload
+							job.Status = models.StatusUploaded
+							_ = h.jobRepo.Update(c.Request.Context(), &job)
+						}
 					}
 				}
 			}
@@ -780,8 +802,11 @@ func (h *Handler) SubmitJob(c *gin.Context) {
 
 	// Parse and validate diarization model
 	diarizeModel := getFormValueWithDefault(c, "diarize_model", "pyannote")
-	if diarizeModel != "pyannote" && diarizeModel != "nvidia_sortformer" && diarizeModel != transcription.DiarizeCAMPP {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid diarize_model. Must be 'pyannote', 'nvidia_sortformer', or 'funasr_campp'"})
+	if diarizeModel != "pyannote" &&
+		diarizeModel != "nvidia_sortformer" &&
+		diarizeModel != transcription.DiarizeCAMPP &&
+		diarizeModel != transcription.DiarizeDiariZenLarge {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid diarize_model. Must be 'pyannote', 'nvidia_sortformer', 'funasr_campp', or 'funasr_diarizen_large'"})
 		_ = h.fileService.RemoveFile(filePath)
 		return
 	}
@@ -1122,6 +1147,11 @@ func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.Tr
 		logger.Debug("Failed to parse JSON parameters, using defaults", "error", err)
 	}
 
+	// System-audio recordings always follow the meeting transcription pipeline.
+	if isSystemAudioJob(job) {
+		applySystemAudioMeetingPipeline(&requestParams)
+	}
+
 	// FireRed/Qwen deployments are GPU-only in this environment.
 	if requestParams.ModelFamily == "firered" || requestParams.ModelFamily == "qwen" {
 		requestParams.Device = "cuda"
@@ -1175,6 +1205,51 @@ func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.Tr
 	}
 
 	return &requestParams, nil
+}
+
+func normalizeUploadSource(source string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(source))
+	if trimmed == "" {
+		return uploadSourceDefault
+	}
+	return trimmed
+}
+
+func isSystemAudioJob(job *models.TranscriptionJob) bool {
+	if job == nil {
+		return false
+	}
+
+	if strings.EqualFold(strings.TrimSpace(job.InputSource), uploadSourceSystemAudio) {
+		return true
+	}
+
+	// Backward-compatible fallback for old rows before source tagging existed.
+	if job.Title != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(*job.Title)), "system recording") {
+		return true
+	}
+
+	return false
+}
+
+func applySystemAudioMeetingPipeline(params *models.WhisperXParams) {
+	if params == nil {
+		return
+	}
+
+	lang := "zh"
+	params.ModelFamily = transcription.FamilyFireRed
+	params.Model = systemMeetingModel
+	params.Device = "cuda"
+	params.Task = "transcribe"
+	params.Diarize = true
+	params.DiarizeModel = transcription.DiarizeDiariZenLarge
+	params.SpeakerEmbeddings = true
+	params.Language = &lang
+
+	if params.BeamSize <= 0 {
+		params.BeamSize = 3
+	}
 }
 
 // @Summary Kill running transcription job

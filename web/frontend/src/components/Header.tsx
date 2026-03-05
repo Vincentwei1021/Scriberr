@@ -37,13 +37,19 @@ export function Header({ onFileSelect, onMultiTrackClick, onDownloadComplete }: 
 	const [isRecorderOpen, setIsRecorderOpen] = useState(false);
 	const [isSystemRecorderOpen, setIsSystemRecorderOpen] = useState(false);
 	const [floatingRecordingBlob, setFloatingRecordingBlob] = useState<Blob | null>(null);
+	const [floatingRecordingDurationMs, setFloatingRecordingDurationMs] = useState<number | null>(null);
 	const [isQuickTranscriptionOpen, setIsQuickTranscriptionOpen] = useState(false);
 	const [isYouTubeDialogOpen, setIsYouTubeDialogOpen] = useState(false);
 
 	// Listen for floating window recording data from Electron desktop app
-	const handleFloatingRecording = useCallback((event: CustomEvent<{ file: File }>) => {
+	const handleFloatingRecording = useCallback((event: CustomEvent<{ file: File; durationMs?: number }>) => {
 		if (event.detail?.file) {
 			setFloatingRecordingBlob(event.detail.file);
+			if (typeof event.detail.durationMs === "number" && Number.isFinite(event.detail.durationMs)) {
+				setFloatingRecordingDurationMs(Math.max(0, Math.round(event.detail.durationMs)));
+			} else {
+				setFloatingRecordingDurationMs(null);
+			}
 			setIsSystemRecorderOpen(true);
 		}
 	}, []);
@@ -165,9 +171,9 @@ export function Header({ onFileSelect, onMultiTrackClick, onDownloadComplete }: 
 		}
 	};
 
-	const handleRecordingComplete = async (blob: Blob, title: string) => {
+	const handleRecordingComplete = async (blob: Blob, title: string, source?: string) => {
 		// Use global recording complete handler
-		await effectiveRecordingComplete(blob, title);
+		await effectiveRecordingComplete(blob, title, source);
 	};
 
 
@@ -374,9 +380,16 @@ export function Header({ onFileSelect, onMultiTrackClick, onDownloadComplete }: 
 			{/* System Audio Recorder Dialog */}
 			<SystemAudioRecorder
 				isOpen={isSystemRecorderOpen}
-				onClose={() => { setIsSystemRecorderOpen(false); setFloatingRecordingBlob(null); }}
-				onRecordingComplete={effectiveRecordingComplete}
+				onClose={() => {
+					setIsSystemRecorderOpen(false);
+					setFloatingRecordingBlob(null);
+					setFloatingRecordingDurationMs(null);
+				}}
+				onRecordingComplete={(blob, title) =>
+					effectiveRecordingComplete(blob, title, "system_audio_recording")
+				}
 				initialBlob={floatingRecordingBlob}
+				initialDurationMs={floatingRecordingDurationMs}
 			/>
 
 			{/* Quick Transcription Dialog */}
