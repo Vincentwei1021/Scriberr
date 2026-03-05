@@ -250,7 +250,7 @@ const PARAM_DESCRIPTIONS = {
     compute_type: "Float16 (faster), Float32 (accurate), Int8 (fastest).",
     batch_size: "Segments processed at once. Higher = faster but more memory.",
     diarize: "Identify and separate different speakers.",
-    diarize_model: "Pyannote (accurate, needs HF token) or NVIDIA Sortformer (up to 4 speakers).",
+    diarize_model: "Pyannote, FunASR CAM++, or FunASR DiariZen-large.",
     temperature: "0 = deterministic, higher = more creative.",
     beam_size: "Search beams. Higher = better quality but slower.",
     vad_method: "Voice detection: Pyannote (accurate) or Silero (fast).",
@@ -553,8 +553,24 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
 
                     {params.model_family === "firered" && (
                         <div className="space-y-6">
-                            <Section title="FireRedASR2-AED Settings" description="Chinese-optimized ASR with punctuation restoration">
+                            <Section title="FireRedASR2 Settings" description="Chinese-optimized ASR with AED/LLM variants and punctuation restoration">
                                 <div className="space-y-4">
+                                    <FormField label="FireRed Model">
+                                        <Select value={params.model} onValueChange={(v) => updateParam('model', v)}>
+                                            <SelectTrigger className={selectTriggerClassName}>
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className={selectContentClassName}>
+                                                <SelectItem value="firered-asr2-aed" className={selectItemClassName}>
+                                                    FireRedASR2-AED
+                                                </SelectItem>
+                                                <SelectItem value="firered-asr2-llm-8b" className={selectItemClassName}>
+                                                    FireRedASR2-LLM (8B)
+                                                </SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </FormField>
+
                                     <FormField label="Beam Size" description="Larger beam = more accurate but slower">
                                         <Input
                                             type="number"
@@ -591,10 +607,22 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                                                         </SelectTrigger>
                                                         <SelectContent className={selectContentClassName}>
                                                             <SelectItem value="funasr_campp" className={selectItemClassName}>FunASR CAM++</SelectItem>
+                                                            <SelectItem value="funasr_diarizen_large" className={selectItemClassName}>FunASR DiariZen-large</SelectItem>
                                                             <SelectItem value="pyannote" className={selectItemClassName}>Pyannote</SelectItem>
                                                         </SelectContent>
                                                     </Select>
                                                 </FormField>
+
+                                                <div className="flex items-center gap-3">
+                                                    <Switch
+                                                        id="firered_speaker_embeddings"
+                                                        checked={params.speaker_embeddings}
+                                                        onCheckedChange={(v) => updateParam('speaker_embeddings', v)}
+                                                    />
+                                                    <label htmlFor="firered_speaker_embeddings" className="text-sm text-[var(--text-primary)] cursor-pointer">
+                                                        Use ERes2NetV2 speaker embeddings
+                                                    </label>
+                                                </div>
 
                                                 <div className="grid grid-cols-2 gap-4">
                                                     <FormField label="Min Speakers" optional>
@@ -661,6 +689,10 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                                                             </div>
                                                         </div>
                                                     </>
+                                                ) : params.diarize_model === "funasr_diarizen_large" ? (
+                                                    <InfoBanner variant="info" title="DiariZen-large diarization">
+                                                        Better speaker separation for meeting audio. Enable ERes2NetV2 embeddings for stronger speaker identity signals.
+                                                    </InfoBanner>
                                                 ) : (
                                                     <InfoBanner variant="info" title="CAM++ diarization">
                                                         Optimized for Chinese conversational audio. Use Pyannote for comparison.

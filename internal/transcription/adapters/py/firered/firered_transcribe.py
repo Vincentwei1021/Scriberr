@@ -25,6 +25,34 @@ MIN_SEGMENT_SEC = 0.3
 DEFAULT_MAX_SEGMENT_SEC = 18.0
 
 
+def configure_torch_checkpoint_loading() -> None:
+    """Make FireRed checkpoint loading compatible with PyTorch 2.6 defaults.
+
+    FireRed checkpoints were exported before torch.load switched to
+    weights_only=True by default. We only load trusted local model files, so
+    set a compatibility default and allow argparse.Namespace in safe globals.
+    """
+    try:
+        import torch
+
+        try:
+            torch.serialization.add_safe_globals([argparse.Namespace])
+        except Exception:
+            # Best effort: older torch versions may not expose add_safe_globals.
+            pass
+
+        original_torch_load = torch.load
+
+        def compat_torch_load(*args, **kwargs):
+            kwargs.setdefault("weights_only", False)
+            return original_torch_load(*args, **kwargs)
+
+        torch.load = compat_torch_load  # type: ignore[assignment]
+        os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+    except Exception as exc:
+        print(f"Warning: failed to configure torch.load compatibility: {exc}", file=sys.stderr)
+
+
 def ensure_fireredasr2s_importable(model_dir: str, source_dir: str | None = None) -> None:
     """Add FireRedASR2S repository root to sys.path."""
     candidates: list[str] = []
@@ -191,19 +219,34 @@ def transcribe_segment(
 
     if timestamps and "timestamp" in results[0]:
         ts = results[0]["timestamp"]
-        for seg in ts.get("segment", []) or []:
+
+        segment_items = []
+        word_items = []
+
+        if isinstance(ts, dict):
+            segment_items = ts.get("segment", []) or []
+            word_items = ts.get("word", []) or []
+        elif isinstance(ts, list):
+            # Some FireRed builds return only a segment list.
+            segment_items = ts
+
+        for seg in segment_items:
+            if not isinstance(seg, dict):
+                continue
             segment_entries.append(
                 {
-                    "segment": seg.get("text", ""),
+                    "segment": seg.get("text", seg.get("segment", "")),
                     "start": float(seg.get("start", 0.0)) + segment_start_sec,
                     "end": float(seg.get("end", 0.0)) + segment_start_sec,
                 }
             )
 
-        for word in ts.get("word", []) or []:
+        for word in word_items:
+            if not isinstance(word, dict):
+                continue
             word_entries.append(
                 {
-                    "word": word.get("text", ""),
+                    "word": word.get("text", word.get("word", "")),
                     "start": float(word.get("start", 0.0)) + segment_start_sec,
                     "end": float(word.get("end", 0.0)) + segment_start_sec,
                 }
@@ -217,6 +260,7 @@ def transcribe_audio(
     model_dir: str,
     output_file: str,
     source_dir: str | None = None,
+    model_type: str = "aed",
     beam_size: int = 3,
     timestamps: bool = False,
     use_punc: bool = True,
@@ -225,11 +269,13 @@ def transcribe_audio(
     max_segment_sec: float = DEFAULT_MAX_SEGMENT_SEC,
 ) -> None:
     """Transcribe audio using FireRedASR2-AED."""
+    configure_torch_checkpoint_loading()
     ensure_fireredasr2s_importable(model_dir, source_dir)
 
     from fireredasr2s.fireredasr2 import FireRedAsr2, FireRedAsr2Config
 
-    print(f"Loading FireRedASR2-AED model from: {model_dir}")
+    normalized_model_type = (model_type or "aed").strip().lower()
+    print(f"Loading FireRedASR2 model from: {model_dir} (type={normalized_model_type})")
     config = FireRedAsr2Config(
         use_gpu=True,
         use_half=False,
@@ -241,7 +287,23 @@ def transcribe_audio(
         eos_penalty=1.0,
         return_timestamp=timestamps,
     )
-    model = FireRedAsr2.from_pretrained("aed", model_dir, config)
+    selected_model_type = "aed"
+    model = None
+    candidate_model_types = [normalized_model_type]
+    if normalized_model_type != "aed":
+        candidate_model_types.append("aed")
+
+    load_errors: list[str] = []
+    for candidate in candidate_model_types:
+        try:
+            model = FireRedAsr2.from_pretrained(candidate, model_dir, config)
+            selected_model_type = candidate
+            break
+        except Exception as exc:
+            load_errors.append(f"{candidate}: {exc}")
+
+    if model is None:
+        raise RuntimeError(f"Failed to load FireRed model ({'; '.join(load_errors)})")
 
     punc_model = None
     if use_punc and punc_model_dir and os.path.exists(punc_model_dir):
@@ -317,7 +379,7 @@ def transcribe_audio(
             "transcription": text,
             "language": "zh",
             "audio_file": audio_path,
-            "model": "FireRedASR2-AED",
+            "model": f"FireRedASR2-{selected_model_type.upper()}",
             "segment_timestamps": segment_timestamps,
             "word_timestamps": word_timestamps,
         }
@@ -336,6 +398,7 @@ def main() -> None:
     parser.add_argument("--output", "-o", required=True, help="Output JSON file path")
     parser.add_argument("--model-dir", required=True, help="Path to FireRedASR2-AED model directory")
     parser.add_argument("--source-dir", help="Path to FireRedASR2S repository root")
+    parser.add_argument("--model-type", default="aed", help="Model type (aed or llm)")
     parser.add_argument("--beam-size", type=int, default=3, help="Beam size for decoding")
     parser.add_argument("--timestamps", action="store_true", help="Include timestamps")
     parser.add_argument("--no-punc", dest="use_punc", action="store_false", help="Disable punctuation")
@@ -353,6 +416,7 @@ def main() -> None:
         model_dir=args.model_dir,
         output_file=args.output,
         source_dir=args.source_dir,
+        model_type=args.model_type,
         beam_size=args.beam_size,
         timestamps=args.timestamps,
         use_punc=args.use_punc,

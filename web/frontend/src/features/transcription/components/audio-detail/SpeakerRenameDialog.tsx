@@ -42,16 +42,20 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resolvedTranscriptSegments, setResolvedTranscriptSegments] = useState<TranscriptSegment[]>([]);
+  const [isLoadingTranscriptSegments, setIsLoadingTranscriptSegments] = useState(false);
 
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [isPreviewReady, setIsPreviewReady] = useState(false);
   const [activePreviewSpeaker, setActivePreviewSpeaker] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewStopAtRef = useRef<number | null>(null);
 
   const speakerSamples = useMemo(() => {
     const samples: Record<string, TranscriptSegment> = {};
-    transcriptSegments.forEach((segment) => {
+    resolvedTranscriptSegments.forEach((segment) => {
       if (!segment.speaker || samples[segment.speaker]) {
         return;
       }
@@ -61,7 +65,7 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
       samples[segment.speaker] = segment;
     });
     return samples;
-  }, [transcriptSegments]);
+  }, [resolvedTranscriptSegments]);
 
   const stopPreview = useCallback(() => {
     const audio = previewAudioRef.current;
@@ -118,6 +122,8 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
       return;
     }
 
+    setIsPreviewLoading(true);
+    setIsPreviewReady(false);
     setPreviewError(null);
     try {
       const response = await fetch('/api/v1/transcription/' + transcriptionId + '/audio', {
@@ -139,21 +145,74 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
     } catch (err) {
       console.error('Error loading preview audio:', err);
       setPreviewError('Unable to load speaker preview audio.');
+      setIsPreviewReady(false);
       setPreviewAudioUrl((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
         }
         return null;
       });
+    } finally {
+      setIsPreviewLoading(false);
     }
   }, [open, transcriptionId, getAuthHeaders]);
+
+  const fetchTranscriptSegments = useCallback(async () => {
+    if (!open || !transcriptionId) {
+      return;
+    }
+
+    const hasIncomingSpeakerSegments = transcriptSegments.some((segment) => !!segment.speaker);
+    if (hasIncomingSpeakerSegments) {
+      setResolvedTranscriptSegments(transcriptSegments);
+      return;
+    }
+
+    setIsLoadingTranscriptSegments(true);
+    try {
+      const response = await fetch('/api/v1/transcription/' + transcriptionId + '/transcript', {
+        headers: { ...getAuthHeaders() },
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch transcript: ' + response.statusText);
+      }
+
+      const data = await response.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const candidateSegments: any[] = data?.transcript?.segments || [];
+      if (Array.isArray(candidateSegments)) {
+        const normalized = candidateSegments
+          .filter((segment) =>
+            segment &&
+            typeof segment.start === 'number' &&
+            typeof segment.end === 'number' &&
+            typeof segment.text === 'string'
+          )
+          .map((segment) => ({
+            start: segment.start,
+            end: segment.end,
+            text: segment.text,
+            speaker: segment.speaker,
+          }));
+        setResolvedTranscriptSegments(normalized);
+      } else {
+        setResolvedTranscriptSegments([]);
+      }
+    } catch (err) {
+      console.error('Error loading transcript segments for speaker preview:', err);
+      setResolvedTranscriptSegments([]);
+    } finally {
+      setIsLoadingTranscriptSegments(false);
+    }
+  }, [open, transcriptionId, transcriptSegments, getAuthHeaders]);
 
   useEffect(() => {
     if (open && transcriptionId) {
       fetchSpeakerMappings();
       fetchPreviewAudio();
+      fetchTranscriptSegments();
     }
-  }, [open, transcriptionId, fetchSpeakerMappings, fetchPreviewAudio]);
+  }, [open, transcriptionId, fetchSpeakerMappings, fetchPreviewAudio, fetchTranscriptSegments]);
 
   useEffect(() => {
     return () => {
@@ -168,6 +227,18 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
       stopPreview();
     }
   }, [open, stopPreview]);
+
+  useEffect(() => {
+    if (!open) {
+      setIsPreviewReady(false);
+      return;
+    }
+
+    const hasIncomingSpeakerSegments = transcriptSegments.some((segment) => !!segment.speaker);
+    if (hasIncomingSpeakerSegments) {
+      setResolvedTranscriptSegments(transcriptSegments);
+    }
+  }, [open, transcriptSegments]);
 
   const handleSpeakerNameChange = (originalSpeaker: string, customName: string) => {
     setSpeakerMappings(prev => ({
@@ -190,6 +261,10 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
     if (!previewAudioUrl || !previewAudioRef.current) {
       return;
     }
+    if (!isPreviewReady) {
+      setPreviewError('Preview audio is still loading. Please try again.');
+      return;
+    }
 
     const sample = speakerSamples[speaker];
     if (!sample) {
@@ -205,8 +280,18 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
     setPreviewError(null);
 
     try {
-      previewStopAtRef.current = sample.end;
-      previewAudioRef.current.currentTime = sample.start;
+      const duration = Number.isFinite(previewAudioRef.current.duration)
+        ? previewAudioRef.current.duration
+        : undefined;
+      const safeStart = duration != null
+        ? Math.max(0, Math.min(sample.start, Math.max(0, duration - 0.05)))
+        : Math.max(0, sample.start);
+      const safeEnd = duration != null
+        ? Math.max(safeStart, Math.min(sample.end, duration))
+        : sample.end;
+
+      previewStopAtRef.current = safeEnd;
+      previewAudioRef.current.currentTime = safeStart;
       await previewAudioRef.current.play();
       setActivePreviewSpeaker(speaker);
     } catch (err) {
@@ -281,6 +366,14 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
               </div>
             )}
 
+            {(isPreviewLoading || isLoadingTranscriptSegments) && (
+              <div className="p-3 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
+                <p className="text-sm text-blue-700 dark:text-blue-300">
+                  Loading speaker preview resources...
+                </p>
+              </div>
+            )}
+
             {speakers.length === 0 ? (
               <Card>
                 <CardContent className="pt-6 text-center text-muted-foreground">
@@ -292,7 +385,7 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
               <div className="space-y-3 max-h-72 overflow-y-auto">
                 {speakers.map((speaker) => {
                   const sample = speakerSamples[speaker];
-                  const canPreview = !!previewAudioUrl && !!sample;
+                  const canPreview = !!previewAudioUrl && !!sample && isPreviewReady && !isPreviewLoading;
 
                   return (
                     <div
@@ -366,6 +459,8 @@ const SpeakerRenameDialog: React.FC<SpeakerRenameDialogProps> = ({
           ref={previewAudioRef}
           src={previewAudioUrl || undefined}
           preload="metadata"
+          onLoadedMetadata={() => setIsPreviewReady(true)}
+          onCanPlay={() => setIsPreviewReady(true)}
           onTimeUpdate={handlePreviewTimeUpdate}
           onEnded={stopPreview}
           className="hidden"
