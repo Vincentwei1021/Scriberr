@@ -52,15 +52,15 @@ const (
 // WhisperXParams contains parameters for WhisperX transcription
 type WhisperXParams struct {
 	// Model family (whisper or nvidia)
-	ModelFamily string `json:"model_family" gorm:"type:varchar(20);default:'whisper'"`
+	ModelFamily string `json:"model_family" gorm:"type:varchar(20);default:'qwen'"`
 
 	// Model parameters
-	Model          string  `json:"model" gorm:"type:varchar(50);default:'small'"`
+	Model          string  `json:"model" gorm:"type:varchar(50);default:'Qwen/Qwen3-ASR-1.7B'"`
 	ModelCacheOnly bool    `json:"model_cache_only" gorm:"type:boolean;default:false"`
 	ModelDir       *string `json:"model_dir,omitempty" gorm:"type:text"`
 
 	// Device and computation
-	Device      string `json:"device" gorm:"type:varchar(20);default:'cpu'"`
+	Device      string `json:"device" gorm:"type:varchar(20);default:'cuda'"`
 	DeviceIndex int    `json:"device_index" gorm:"type:int;default:0"`
 	BatchSize   int    `json:"batch_size" gorm:"type:int;default:8"`
 	ComputeType string `json:"compute_type" gorm:"type:varchar(20);default:'float32'"`

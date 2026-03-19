@@ -1026,14 +1026,14 @@ export function SystemAudioRecorder({
 						{/* Live Transcript */}
 						<div className="space-y-2">
 							<div className="text-sm font-medium text-[var(--text-primary)]">
-								Live Transcript (FireRedVAD)
+								Live Transcript (FireRed Stream-VAD + Qwen3-ASR 1.7B)
 							</div>
 							<div className="rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)] p-3 min-h-[90px] max-h-[170px] overflow-y-auto text-sm text-[var(--text-primary)] whitespace-pre-wrap">
 								{liveTranscript || "Realtime text will appear here after speech segments are detected."}
 							</div>
 							<div className="text-xs text-[var(--text-tertiary)]">
-								{realtimeStatus === "connecting" ? "Initializing FireRed realtime ASR..." :
-								 realtimeStatus === "ready" ? "Realtime transcription running (FireRedVAD)" :
+								{realtimeStatus === "connecting" ? "Initializing FireRed Stream-VAD + Qwen3-ASR..." :
+								 realtimeStatus === "ready" ? "Realtime transcription running (FireRed Stream-VAD + Qwen3-ASR 1.7B)" :
 								 realtimeStatus === "error" ? "Realtime transcription unavailable" :
 								 "Realtime transcription idle"}
 							</div>

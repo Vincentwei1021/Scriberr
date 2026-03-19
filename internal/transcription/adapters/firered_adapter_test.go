@@ -42,11 +42,35 @@ func TestBuildFireRedArgsIncludesSourceDirNoPuncAndVAD(t *testing.T) {
 	assert.Contains(t, args, "/opt/FireRedASR2S")
 	assert.Contains(t, args, "--beam-size")
 	assert.Contains(t, args, "4")
+	assert.Contains(t, args, "--model-type")
+	assert.Contains(t, args, "aed")
 	assert.Contains(t, args, "--no-punc")
 	assert.Contains(t, args, "--vad-model-dir")
 	assert.Contains(t, args, vadDir)
 	assert.Contains(t, args, "--max-segment-seconds")
 	assert.Contains(t, args, "18")
+}
+
+func TestBuildFireRedArgsUsesLLMVariantWhenModelDirExists(t *testing.T) {
+	t.Setenv("FIRERED_SOURCE_DIR", "/opt/FireRedASR2S")
+
+	modelsRoot := t.TempDir()
+	aedDir := filepath.Join(modelsRoot, "FireRedASR2-AED")
+	llmDir := filepath.Join(modelsRoot, "FireRedASR2-LLM")
+	require.NoError(t, os.MkdirAll(aedDir, 0o755))
+	require.NoError(t, os.MkdirAll(llmDir, 0o755))
+	t.Setenv("FIRERED_MODEL_DIR_LLM", llmDir)
+
+	adapter := NewFireRedAdapter(t.TempDir(), aedDir)
+	args, err := adapter.buildFireRedArgs(interfaces.AudioInput{FilePath: "/tmp/input.wav"}, map[string]interface{}{
+		"model_variant": "llm8b",
+	}, t.TempDir())
+
+	require.NoError(t, err)
+	assert.Contains(t, args, "--model-dir")
+	assert.Contains(t, args, llmDir)
+	assert.Contains(t, args, "--model-type")
+	assert.Contains(t, args, "llm")
 }
 
 func TestParseFireRedResult(t *testing.T) {
@@ -79,7 +103,9 @@ func TestEmbeddedFireRedPyprojectIncludesRuntimeDependencies(t *testing.T) {
 	content := string(pyproject)
 	for _, dep := range []string{
 		"\"kaldi-native-fbank\"",
-		"\"transformers\"",
+		"\"transformers==4.51.3\"",
+		"\"accelerate\"",
+		"\"peft\"",
 		"\"cn2an\"",
 		"\"textgrid\"",
 	} {

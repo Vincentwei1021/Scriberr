@@ -74,7 +74,7 @@ func NewUnifiedTranscriptionService(jobRepo repository.JobRepository, tempDir, o
 		tempDirectory:   tempDir,
 		outputDirectory: outputDir,
 		defaultModelIDs: map[string]string{
-			"transcription": ModelWhisperX,
+			"transcription": ModelQwen3,
 			"diarization":   ModelPyannote,
 		},
 		jobRepo:        jobRepo,

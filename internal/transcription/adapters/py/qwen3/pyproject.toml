@@ -7,11 +7,19 @@ dependencies = [
     "torch>=2.5.0",
     "torchaudio>=2.5.0",
     "qwen-asr",
-    "transformers>=4.45.0",
     "accelerate",
     "soundfile",
     "numpy",
+    "kaldiio",
+    "kaldi-native-fbank",
+    "peft",
+    "cn2an",
+    "textgrid",
+    "sentencepiece",
 ]
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [tool.uv.sources]
 torch = [

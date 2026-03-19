@@ -21,11 +21,18 @@ var qwen3Scripts embed.FS
 // Qwen3ASRAdapter implements the TranscriptionAdapter interface for Qwen3-ASR
 type Qwen3ASRAdapter struct {
 	*BaseAdapter
-	envPath string
+	envPath          string
+	fireRedModelDir  string
+	fireRedSourceDir string
 }
 
 // NewQwen3ASRAdapter creates a new Qwen3-ASR adapter
 func NewQwen3ASRAdapter(envPath string) *Qwen3ASRAdapter {
+	fireRedModelDir := strings.TrimSpace(os.Getenv("FIRERED_MODEL_DIR"))
+	if fireRedModelDir == "" {
+		fireRedModelDir = "/app/models/FireRedASR2-AED"
+	}
+
 	capabilities := interfaces.ModelCapabilities{
 		ModelID:     "qwen3_asr",
 		ModelFamily: "qwen",
@@ -73,8 +80,10 @@ func NewQwen3ASRAdapter(envPath string) *Qwen3ASRAdapter {
 	baseAdapter := NewBaseAdapter("qwen3_asr", envPath, capabilities, schema)
 
 	adapter := &Qwen3ASRAdapter{
-		BaseAdapter: baseAdapter,
-		envPath:     envPath,
+		BaseAdapter:      baseAdapter,
+		envPath:          envPath,
+		fireRedModelDir:  fireRedModelDir,
+		fireRedSourceDir: resolveFireRedSourceDir(fireRedModelDir),
 	}
 
 	return adapter
@@ -89,13 +98,13 @@ func (q *Qwen3ASRAdapter) GetSupportedModels() []string {
 func (q *Qwen3ASRAdapter) PrepareEnvironment(ctx context.Context) error {
 	logger.Info("Preparing Qwen3-ASR environment", "env_path", q.envPath)
 
-	// Copy transcription script
-	if err := q.copyTranscriptionScript(); err != nil {
-		return fmt.Errorf("failed to copy transcription script: %w", err)
+	// Copy Python entrypoints used by batch and realtime transcription.
+	if err := q.copyPythonScripts(); err != nil {
+		return fmt.Errorf("failed to copy transcription scripts: %w", err)
 	}
 
 	// Check if environment is already ready
-	if CheckEnvironmentReady(q.envPath, "from qwen_asr import Qwen3ASRModel; print('ok')") {
+	if CheckEnvironmentReady(q.envPath, "from qwen_asr import Qwen3ASRModel; import kaldiio, peft, transformers; print('ok')") {
 		logger.Info("Qwen3-ASR environment already ready")
 		q.initialized = true
 		return nil
@@ -148,20 +157,22 @@ func (q *Qwen3ASRAdapter) setupQwen3Environment() error {
 	return nil
 }
 
-// copyTranscriptionScript creates the Python script for Qwen3-ASR transcription
-func (q *Qwen3ASRAdapter) copyTranscriptionScript() error {
+// copyPythonScripts creates the Python scripts for Qwen3-ASR transcription workflows.
+func (q *Qwen3ASRAdapter) copyPythonScripts() error {
 	if err := os.MkdirAll(q.envPath, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	scriptContent, err := qwen3Scripts.ReadFile("py/qwen3/qwen3_transcribe.py")
-	if err != nil {
-		return fmt.Errorf("failed to read embedded qwen3_transcribe.py: %w", err)
-	}
+	for _, scriptName := range []string{"qwen3_transcribe.py", "qwen3_realtime_worker.py"} {
+		scriptContent, err := qwen3Scripts.ReadFile(filepath.Join("py/qwen3", scriptName))
+		if err != nil {
+			return fmt.Errorf("failed to read embedded %s: %w", scriptName, err)
+		}
 
-	scriptPath := filepath.Join(q.envPath, "qwen3_transcribe.py")
-	if err := os.WriteFile(scriptPath, scriptContent, 0755); err != nil {
-		return fmt.Errorf("failed to write transcription script: %w", err)
+		scriptPath := filepath.Join(q.envPath, scriptName)
+		if err := os.WriteFile(scriptPath, scriptContent, 0755); err != nil {
+			return fmt.Errorf("failed to write %s: %w", scriptName, err)
+		}
 	}
 
 	return nil
@@ -272,6 +283,16 @@ func (q *Qwen3ASRAdapter) buildQwen3Args(input interfaces.AudioInput, params map
 	if model := q.GetStringParameter(params, "model"); model != "" && model != "Qwen/Qwen3-ASR-1.7B" {
 		args = append(args, "--model", model)
 	}
+
+	if q.fireRedSourceDir != "" {
+		args = append(args, "--source-dir", q.fireRedSourceDir)
+	}
+
+	vadDir := filepath.Join(filepath.Dir(q.fireRedModelDir), "FireRedVAD", "VAD")
+	if _, err := os.Stat(vadDir); err == nil {
+		args = append(args, "--vad-model-dir", vadDir)
+	}
+	args = append(args, "--max-segment-seconds", "18")
 
 	return args, nil
 }

@@ -24,6 +24,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const realtimeQwenModel = "Qwen/Qwen3-ASR-1.7B"
+
 var realtimeWSUpgrader = websocket.Upgrader{
 	ReadBufferSize:  32 * 1024,
 	WriteBufferSize: 32 * 1024,
@@ -48,26 +50,24 @@ func resolveRealtimeSourceDir(modelDir string) string {
 	return filepath.Dir(filepath.Dir(modelDir))
 }
 
-func resolveRealtimeModelDirs(modelDir string) (vadModelDir, puncModelDir string) {
+func resolveRealtimeModelDirs(modelDir string) (streamVADModelDir string) {
 	baseDir := filepath.Dir(modelDir)
-	return filepath.Join(baseDir, "FireRedVAD", "Stream-VAD"), filepath.Join(baseDir, "FireRedPunc")
+	return filepath.Join(baseDir, "FireRedVAD", "Stream-VAD")
 }
 
-func buildRealtimeWorkerArgs(envPath, scriptPath, modelDir, sourceDir, vadModelDir, puncModelDir string) []string {
+func buildRealtimeWorkerArgs(envPath, scriptPath, model, sourceDir, vadModelDir string) []string {
 	args := []string{
 		"run", "--native-tls", "--project", envPath, "python", scriptPath,
-		"--model-dir", modelDir,
-		"--vad-model-dir", vadModelDir,
 	}
 
-	if sourceDir != "" {
+	if strings.TrimSpace(model) != "" {
+		args = append(args, "--model", model)
+	}
+	if strings.TrimSpace(sourceDir) != "" {
 		args = append(args, "--source-dir", sourceDir)
 	}
-
-	if puncModelDir != "" {
-		if _, err := os.Stat(puncModelDir); err == nil {
-			args = append(args, "--punc-model-dir", puncModelDir)
-		}
+	if strings.TrimSpace(vadModelDir) != "" {
+		args = append(args, "--vad-model-dir", vadModelDir)
 	}
 
 	return args
@@ -109,27 +109,27 @@ func (h *Handler) RealtimeTranscriptionWS(c *gin.Context) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
-	envPath := filepath.Join(h.config.WhisperXEnv, "firered")
 	modelDir := strings.TrimSpace(os.Getenv("FIRERED_MODEL_DIR"))
 	if modelDir == "" {
 		modelDir = "/app/models/FireRedASR2-AED"
 	}
 	sourceDir := resolveRealtimeSourceDir(modelDir)
-	vadModelDir, puncModelDir := resolveRealtimeModelDirs(modelDir)
+	vadModelDir := resolveRealtimeModelDirs(modelDir)
 
-	adapter := adapters.NewFireRedAdapter(envPath, modelDir)
+	envPath := filepath.Join(h.config.WhisperXEnv, "qwen3")
+	adapter := adapters.NewQwen3ASRAdapter(envPath)
 	if err := adapter.PrepareEnvironment(ctx); err != nil {
-		_ = sendEvent(realtimeWorkerEvent{Type: "error", Message: fmt.Sprintf("Failed to prepare FireRed runtime: %v", err)})
+		_ = sendEvent(realtimeWorkerEvent{Type: "error", Message: fmt.Sprintf("Failed to prepare Qwen3-ASR runtime: %v", err)})
 		return
 	}
 
-	scriptPath := filepath.Join(envPath, "firered_realtime_worker.py")
+	scriptPath := filepath.Join(envPath, "qwen3_realtime_worker.py")
 	if _, err := os.Stat(scriptPath); err != nil {
 		_ = sendEvent(realtimeWorkerEvent{Type: "error", Message: "Realtime worker script is missing"})
 		return
 	}
 
-	args := buildRealtimeWorkerArgs(envPath, scriptPath, modelDir, sourceDir, vadModelDir, puncModelDir)
+	args := buildRealtimeWorkerArgs(envPath, scriptPath, realtimeQwenModel, sourceDir, vadModelDir)
 	cmd := exec.CommandContext(ctx, "uv", args...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 

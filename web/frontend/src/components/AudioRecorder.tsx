@@ -441,9 +441,9 @@ export function AudioRecorder({
 
 	const realtimeStatusText =
 		realtimeStatus === "connecting"
-			? "Initializing FireRed realtime ASR..."
+			? "Initializing FireRed Stream-VAD + Qwen3-ASR..."
 			: realtimeStatus === "ready"
-				? "Realtime transcription running (FireRedVAD)"
+				? "Realtime transcription running (FireRed Stream-VAD + Qwen3-ASR 1.7B)"
 				: realtimeStatus === "error"
 					? "Realtime transcription unavailable"
 					: "Realtime transcription idle";

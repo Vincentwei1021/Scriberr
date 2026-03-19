@@ -11,37 +11,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResolveRealtimeModelDirs(t *testing.T) {
-	vad, punc := resolveRealtimeModelDirs("/app/models/FireRedASR2-AED")
-	assert.Equal(t, "/app/models/FireRedVAD/Stream-VAD", vad)
-	assert.Equal(t, "/app/models/FireRedPunc", punc)
-}
-
 func TestBuildRealtimeWorkerArgs(t *testing.T) {
 	envPath := t.TempDir()
-	scriptPath := filepath.Join(envPath, "firered_realtime_worker.py")
-	puncDir := filepath.Join(envPath, "FireRedPunc")
-	require.NoError(t, os.MkdirAll(puncDir, 0o755))
+	scriptPath := filepath.Join(envPath, "qwen3_realtime_worker.py")
+	vadDir := filepath.Join(envPath, "FireRedVAD", "Stream-VAD")
+	require.NoError(t, os.MkdirAll(vadDir, 0o755))
 
-	args := buildRealtimeWorkerArgs(
-		envPath,
-		scriptPath,
-		"/app/models/FireRedASR2-AED",
-		"/app/FireRedASR2S",
-		"/app/models/FireRedVAD/Stream-VAD",
-		puncDir,
-	)
+	args := buildRealtimeWorkerArgs(envPath, scriptPath, realtimeQwenModel, "/opt/FireRedASR2S", vadDir)
 
 	assert.Contains(t, args, "--project")
 	assert.Contains(t, args, envPath)
-	assert.Contains(t, args, "--model-dir")
-	assert.Contains(t, args, "/app/models/FireRedASR2-AED")
+	assert.Contains(t, args, "--model")
+	assert.Contains(t, args, realtimeQwenModel)
 	assert.Contains(t, args, "--source-dir")
-	assert.Contains(t, args, "/app/FireRedASR2S")
+	assert.Contains(t, args, "/opt/FireRedASR2S")
 	assert.Contains(t, args, "--vad-model-dir")
-	assert.Contains(t, args, "/app/models/FireRedVAD/Stream-VAD")
-	assert.Contains(t, args, "--punc-model-dir")
-	assert.Contains(t, args, puncDir)
+	assert.Contains(t, args, vadDir)
+}
+
+func TestResolveRealtimeModelDirs(t *testing.T) {
+	vadDir := resolveRealtimeModelDirs("/app/models/FireRedASR2-AED")
+	assert.Equal(t, "/app/models/FireRedVAD/Stream-VAD", vadDir)
 }
 
 func TestWriteLengthPrefixedChunk(t *testing.T) {

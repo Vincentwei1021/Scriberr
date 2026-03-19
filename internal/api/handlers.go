@@ -59,7 +59,8 @@ type Handler struct {
 const (
 	uploadSourceDefault     = "upload"
 	uploadSourceSystemAudio = "system_audio_recording"
-	systemMeetingModel      = "firered-asr2-llm-8b"
+	defaultQwenASRModel     = "Qwen/Qwen3-ASR-1.7B"
+	systemMeetingModel      = defaultQwenASRModel
 )
 
 // NewHandler creates a new handler
@@ -771,10 +772,11 @@ func (h *Handler) SubmitJob(c *gin.Context) {
 		diarize = getFormBoolWithDefault(c, "diarize", false)
 	}
 	params := models.WhisperXParams{
-		Model:       getFormValueWithDefault(c, "model", "base"),
+		ModelFamily: getFormValueWithDefault(c, "model_family", transcription.FamilyQwen),
+		Model:       getFormValueWithDefault(c, "model", defaultQwenASRModel),
 		BatchSize:   getFormIntWithDefault(c, "batch_size", 16),
 		ComputeType: getFormValueWithDefault(c, "compute_type", "int8"),
-		Device:      getFormValueWithDefault(c, "device", "cpu"),
+		Device:      getFormValueWithDefault(c, "device", "cuda"),
 		VadOnset:    getFormFloatWithDefault(c, "vad_onset", 0.500),
 		VadOffset:   getFormFloatWithDefault(c, "vad_offset", 0.363),
 		Diarize:     diarize,
@@ -1100,10 +1102,10 @@ func (h *Handler) getJobForTranscription(c *gin.Context, jobID string) (*models.
 func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.TranscriptionJob, jobID string) (*models.WhisperXParams, error) {
 	// Set defaults
 	requestParams := models.WhisperXParams{
-		ModelFamily:                    "whisper", // Default to whisper for backward compatibility
-		Model:                          "small",
+		ModelFamily:                    transcription.FamilyQwen,
+		Model:                          defaultQwenASRModel,
 		ModelCacheOnly:                 false,
-		Device:                         "cpu",
+		Device:                         "cuda",
 		DeviceIndex:                    0,
 		BatchSize:                      8,
 		ComputeType:                    "float32",
@@ -1238,7 +1240,7 @@ func applySystemAudioMeetingPipeline(params *models.WhisperXParams) {
 	}
 
 	lang := "zh"
-	params.ModelFamily = transcription.FamilyFireRed
+	params.ModelFamily = transcription.FamilyQwen
 	params.Model = systemMeetingModel
 	params.Device = "cuda"
 	params.Task = "transcribe"

@@ -101,10 +101,10 @@ interface TranscriptionConfigDialogProps {
 }
 
 const DEFAULT_PARAMS: WhisperXParams = {
-    model_family: "whisper",
-    model: "small",
+    model_family: "qwen",
+    model: "Qwen/Qwen3-ASR-1.7B",
     model_cache_only: false,
-    device: "cpu",
+    device: "cuda",
     device_index: 0,
     batch_size: 8,
     compute_type: "float32",
@@ -319,7 +319,7 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
         if (open) {
             const baseParams = initialParams || DEFAULT_PARAMS;
             const isFireRedOrQwen = baseParams.model_family === 'firered' || baseParams.model_family === 'qwen';
-            const shouldDefaultEnableDiarize = !initialParams && !isMultiTrack && isFireRedOrQwen;
+            const shouldDefaultEnableDiarize = !initialParams && !isMultiTrack && baseParams.model_family === 'firered';
             const shouldForceCuda = baseParams.model_family === 'firered' || baseParams.model_family === 'qwen';
             const resolvedDiarizeModel = baseParams.diarize_model || (isFireRedOrQwen ? 'funasr_campp' : 'pyannote');
             setParams({
