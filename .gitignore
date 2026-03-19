@@ -71,3 +71,8 @@ tmp/
 # *.png
 dhl.txt
 __pycache__/
+.claude/
+scriberr-bin
+pretrained_models_firered
+._*
+**/._*
